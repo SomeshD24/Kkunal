@@ -52,24 +52,25 @@ else:
 
 The Scrip Master CSV is automatically downloaded when you log in. It maps instrument symbols to their tokens, lot sizes, and other metadata.
 
-### `get_token(symbol, exchange=None)`
+### `get_token(symbol, segment=None)`
 
 Looks up tokens for a given symbol or description.
 
-- **Without `exchange`**: Returns a **list of dicts** for ALL matching rows across every segment (NSE, BSE, CDS, etc.). Each dict contains `Token`, `Exchange`, `Symbol`, `SecDesc`, `Series`, `MarketLot`.
-- **With `exchange`** (e.g., `"NSE"`, `"BSE"`): Returns a **single token string** for that specific exchange, or `None` if not found.
+- **Without `segment`**: Returns a **list of dicts** for ALL matching rows across every segment (NSE, BSE, CDS, etc.). Each dict contains `Token`, `Exchange`, `Segment`, `Symbol`, `SecDesc`, `Series`, `MarketLot`.
+- **With `segment`** (e.g., `"1"`, `"13"`): Returns a **single token string** for that specific segment, or `None` if not found.
 
 ```python
 # Get all matches across all segments
 matches = client.scrip_master.get_token("RELIANCE")
 for m in matches:
-    print(f"{m['Exchange']} — Token: {m['Token']}, Symbol: {m['Symbol']}")
-# BSE — Token: 500325, Symbol: RELIANCE
+    print(f"Segment: {m['Segment']} — Token: {m['Token']}, Symbol: {m['Symbol']}")
+# Segment: 1 — Token: 2885, Symbol: RELIANCE
+# Segment: 13 — Token: 500325, Symbol: RELIANCE
 # ...
 
-# Get specific exchange token
-nse_token = client.scrip_master.get_token("RELIANCE", exchange="NSE")
-bse_token = client.scrip_master.get_token("RELIANCE", exchange="BSE")
+# Get specific segment token
+nse_token = client.scrip_master.get_token("RELIANCE", segment="1")
+nse_cds_token = client.scrip_master.get_token("RELIANCE", segment="13")
 ```
 
 ### `search(name)`

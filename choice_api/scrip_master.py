@@ -12,8 +12,9 @@ class ScripMaster:
     Provides fast lookups for Tokens, Lot Sizes, and Symbols.
     """
     def __init__(self):
-        self.symbol_to_tokens = defaultdict(list)  # symbol/desc -> [token1, token2, ...]
+        self.symbol_to_rows = defaultdict(list)
         self.token_to_details = {}
+        self.all_rows = []
         self.is_loaded = False
 
     def fetch(self):
@@ -48,14 +49,13 @@ class ScripMaster:
                         
                         # Store complete details
                         self.token_to_details[token] = row
+                        self.all_rows.append(row)
                         
-                        # Map symbol/sec_desc to list of tokens (all segments)
+                        # Map symbol/sec_desc to the row itself
                         if symbol:
-                            if token not in self.symbol_to_tokens[symbol]:
-                                self.symbol_to_tokens[symbol].append(token)
-                        if sec_desc:
-                            if token not in self.symbol_to_tokens[sec_desc]:
-                                self.symbol_to_tokens[sec_desc].append(token)
+                            self.symbol_to_rows[symbol].append(row)
+                        if sec_desc and sec_desc != symbol:
+                            self.symbol_to_rows[sec_desc].append(row)
                             
                         count += 1
                         
@@ -77,46 +77,43 @@ class ScripMaster:
         logger.warning("Could not download Scrip Master.")
         return False
 
-    def get_token(self, symbol_or_desc: str, exchange: str = None):
+    def get_token(self, symbol_or_desc: str, segment: str = None):
         """
         Looks up tokens for a given Symbol or SecDesc.
         
-        If `exchange` is provided (e.g., 'NSE', 'BSE', 'CDS'), returns the single 
-        token string for that specific exchange match, or None if not found.
+        If `segment` is provided (e.g., '1', '13'), returns the single 
+        token string for that specific segment match, or None if not found.
         
-        If `exchange` is NOT provided, returns a list of dicts for ALL matching 
-        rows across every segment/exchange. Each dict contains:
-            Token, Exchange, Symbol, SecDesc, Series, MarketLot
-        This ensures you see NSE, BSE, CDS, and any other segment matches.
+        If `segment` is NOT provided, returns a list of dicts for ALL matching 
+        rows across every segment. Each dict contains:
+            Token, Exchange, Segment, Symbol, SecDesc, Series, MarketLot
         
         Returns:
-            list[dict] when exchange is None — all matching rows.
-            str or None when exchange is specified — single token or None.
+            list[dict] when segment is None — all matching rows.
+            str or None when segment is specified — single token or None.
         """
-        if exchange:
-            exchange_upper = exchange.upper().strip()
-            for token, details in self.token_to_details.items():
-                d_symbol = details.get('Symbol', '').strip()
-                d_sec_desc = details.get('SecDesc', '').strip()
-                d_exch = details.get('Exchange', '').strip().upper()
-                if (d_symbol == symbol_or_desc or d_sec_desc == symbol_or_desc) and d_exch == exchange_upper:
-                    return token
+        rows = self.symbol_to_rows.get(symbol_or_desc, [])
+        
+        if segment:
+            segment_str = str(segment).strip()
+            for row in rows:
+                if row.get('Segment', '').strip() == segment_str:
+                    return row.get('Token', '').strip()
             return None
         
-        # No exchange specified — return all matching rows
-        tokens = self.symbol_to_tokens.get(symbol_or_desc, [])
+        # No segment specified — return all matching rows
         results = []
-        for t in tokens:
-            details = self.token_to_details.get(t, {})
+        for row in rows:
             results.append({
-                'Token': t,
-                'Exchange': details.get('Exchange', '').strip(),
-                'Symbol': details.get('Symbol', '').strip(),
-                'SecDesc': details.get('SecDesc', '').strip(),
-                'Series': details.get('Series', '').strip(),
-                'MarketLot': details.get('MarketLot', '').strip(),
+                'Token': row.get('Token', '').strip(),
+                'Exchange': row.get('Exchange', '').strip(),
+                'Segment': row.get('Segment', '').strip(),
+                'Symbol': row.get('Symbol', '').strip(),
+                'SecDesc': row.get('SecDesc', '').strip(),
+                'Series': row.get('Series', '').strip(),
+                'MarketLot': row.get('MarketLot', '').strip(),
             })
-        return results if results else []
+        return results
 
     def search(self, name: str):
         """
@@ -124,25 +121,22 @@ class ScripMaster:
         contains the given name. Useful for fuzzy discovery of instruments.
         
         Returns:
-            list[dict] — matching rows with Token, Exchange, Symbol, SecDesc, Series, MarketLot.
+            list[dict] — matching rows with Token, Exchange, Segment, Symbol, SecDesc, Series, MarketLot.
         """
         name_upper = name.upper().strip()
         results = []
-        seen_tokens = set()
-        for token, details in self.token_to_details.items():
-            if token in seen_tokens:
-                continue
-            d_symbol = details.get('Symbol', '').strip().upper()
-            d_sec_desc = details.get('SecDesc', '').strip().upper()
+        for row in self.all_rows:
+            d_symbol = row.get('Symbol', '').strip().upper()
+            d_sec_desc = row.get('SecDesc', '').strip().upper()
             if name_upper in d_symbol or name_upper in d_sec_desc:
-                seen_tokens.add(token)
                 results.append({
-                    'Token': token,
-                    'Exchange': details.get('Exchange', '').strip(),
-                    'Symbol': details.get('Symbol', '').strip(),
-                    'SecDesc': details.get('SecDesc', '').strip(),
-                    'Series': details.get('Series', '').strip(),
-                    'MarketLot': details.get('MarketLot', '').strip(),
+                    'Token': row.get('Token', '').strip(),
+                    'Exchange': row.get('Exchange', '').strip(),
+                    'Segment': row.get('Segment', '').strip(),
+                    'Symbol': row.get('Symbol', '').strip(),
+                    'SecDesc': row.get('SecDesc', '').strip(),
+                    'Series': row.get('Series', '').strip(),
+                    'MarketLot': row.get('MarketLot', '').strip(),
                 })
         return results
 
