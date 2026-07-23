@@ -301,7 +301,7 @@ Returns touchline data for multiple instruments.
 
 ```python
 # Format: "SegmentId1,Token1|SegmentId2,Token2"
-touchline = client.market.get_multiple_touchline("1,2885|1,11536")
+touchline = client.market.get_multiple_touchline("1@2885,1@11536")
 ```
 
 ---
