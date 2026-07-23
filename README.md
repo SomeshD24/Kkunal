@@ -54,17 +54,33 @@ The Scrip Master CSV is automatically downloaded when you log in. It maps instru
 
 ### `get_token(symbol, exchange=None)`
 
-Returns the token for a given symbol.
+Looks up tokens for a given symbol or description.
 
-- For **NSE** instruments, no `exchange` parameter is needed (returns NSE by default).
-- For **BSE** instruments, pass `exchange="BSE"` explicitly.
+- **Without `exchange`**: Returns a **list of dicts** for ALL matching rows across every segment (NSE, BSE, CDS, etc.). Each dict contains `Token`, `Exchange`, `Symbol`, `SecDesc`, `Series`, `MarketLot`.
+- **With `exchange`** (e.g., `"NSE"`, `"BSE"`): Returns a **single token string** for that specific exchange, or `None` if not found.
 
 ```python
-# NSE (default)
-reliance_token = client.scrip_master.get_token("RELIANCE")
+# Get all matches across all segments
+matches = client.scrip_master.get_token("RELIANCE")
+for m in matches:
+    print(f"{m['Exchange']} — Token: {m['Token']}, Symbol: {m['Symbol']}")
+# NSE — Token: 2885, Symbol: RELIANCE
+# BSE — Token: 500325, Symbol: RELIANCE
+# ...
 
-# BSE (must specify exchange)
-reliance_bse_token = client.scrip_master.get_token("RELIANCE", exchange="BSE")
+# Get specific exchange token
+nse_token = client.scrip_master.get_token("RELIANCE", exchange="NSE")
+bse_token = client.scrip_master.get_token("RELIANCE", exchange="BSE")
+```
+
+### `search(name)`
+
+Case-insensitive fuzzy search: returns all rows where Symbol or SecDesc **contains** the given name.
+
+```python
+results = client.scrip_master.search("NIFTY")
+for r in results:
+    print(f"{r['Exchange']} | {r['Symbol']} | Token: {r['Token']}")
 ```
 
 ### `get_details(token)`
