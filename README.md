@@ -64,7 +64,6 @@ Looks up tokens for a given symbol or description.
 matches = client.scrip_master.get_token("RELIANCE")
 for m in matches:
     print(f"{m['Exchange']} — Token: {m['Token']}, Symbol: {m['Symbol']}")
-# NSE — Token: 2885, Symbol: RELIANCE
 # BSE — Token: 500325, Symbol: RELIANCE
 # ...
 
@@ -90,7 +89,6 @@ Returns all CSV row details for a given token as a dictionary.
 ```python
 details = client.scrip_master.get_details("2885")
 print(details)
-# {'Exchange': 'NSE', 'Segment': '1', 'Token': '2885', 'Symbol': 'RELIANCE', ...}
 ```
 
 ### `get_lot_size(token)`
