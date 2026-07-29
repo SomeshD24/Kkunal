@@ -110,7 +110,7 @@ print(lot)  # 1 for equity, 250 for NIFTY futures, etc.
 |---|---|---|
 | `segment_id` | `int` | `1` = NSE Cash, `2` = NSE F&O, `3` = BSE Cash |
 | `token` | `int` | Instrument token from Scrip Master |
-| `order_type` | `str` | `"RL_MKT"` = Market, `"RL_LIMIT"` = Limit, `"SL_MKT"` = Stop Loss Market, `"SL_LIMIT"` = Stop Loss Limit |
+| `order_type` | `str` | `"RL_LIMIT"` = Limit, `"SL_LIMIT"` = Stop Loss Limit *(Note: Market orders are not supported via API)* |
 | `bs` | `int` | `1` = Buy, `2` = Sell |
 | `qty` | `int` | Total quantity in shares |
 | `price` | `float` | Price in paisa (e.g., 1300 INR → `130000`) |
@@ -123,10 +123,10 @@ print(lot)  # 1 for equity, 250 for NIFTY futures, etc.
 response = client.orders.place_order(
     segment_id=1,
     token=2885,
-    order_type="RL_MKT",
+    order_type="RL_LIMIT",
     bs=1,
     qty=1,
-    price=0,
+    price=130000,
     trigger_price=0,
     validity=1,
     product_type="D"
