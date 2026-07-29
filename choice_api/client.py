@@ -12,16 +12,24 @@ from .market import MarketAPI
 from .historical import HistoricalAPI
 from .scrip_master import ScripMaster
 
+# Available base URL endpoints
+BASE_URL_OMNE = "https://finxomne.choiceindia.com"  # Default / legacy endpoint
+BASE_URL_FINX = "https://finx.choiceindia.com"       # Alternate endpoint
+
 class ChoiceClient:
     """
     Main client for interacting with the Choice API.
     Handles authentication, session management, and provides access to other API modules.
+
+    Available base URLs (use the module-level constants for convenience):
+      - BASE_URL_OMNE  ->  "https://finxomne.choiceindia.com"  (default)
+      - BASE_URL_FINX  ->  "https://finx.choiceindia.com"
     """
     def __init__(
         self,
         vendor_id: str,
         api_key: str,
-        base_url: str = "https://finxomne.choiceindia.com"
+        base_url: str = BASE_URL_OMNE
     ):
         self.vendor_id = vendor_id
         self.api_key = api_key

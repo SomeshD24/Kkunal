@@ -1,4 +1,4 @@
-from .client import ChoiceClient
+from .client import ChoiceClient, BASE_URL_OMNE, BASE_URL_FINX
 from .orders import OrdersAPI
 from .portfolio import PortfolioAPI
 from .funds import FundsAPI
@@ -8,9 +8,11 @@ from .scrip_master import ScripMaster
 from .websockets_interactive import InteractiveSocketClient
 from .websockets_feed import PriceFeedSocketClient
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __all__ = [
     "ChoiceClient",
+    "BASE_URL_OMNE",
+    "BASE_URL_FINX",
     "OrdersAPI",
     "PortfolioAPI",
     "FundsAPI",

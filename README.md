@@ -15,11 +15,19 @@ All dependencies (`requests`, `websockets`, `pandas`) are installed automaticall
 ## Quick Start
 
 ```python
-from choice_api import ChoiceClient
+from choice_api import ChoiceClient, BASE_URL_OMNE, BASE_URL_FINX
 
+# Default endpoint (https://finxomne.choiceindia.com)
 client = ChoiceClient(
     vendor_id="YOUR_VENDOR_ID",
     api_key="YOUR_JWT_BEARER_TOKEN"
+)
+
+# Alternate endpoint (https://finx.choiceindia.com)
+client = ChoiceClient(
+    vendor_id="YOUR_VENDOR_ID",
+    api_key="YOUR_JWT_BEARER_TOKEN",
+    base_url=BASE_URL_FINX
 )
 
 # Login (TOTP flow is handled automatically)
