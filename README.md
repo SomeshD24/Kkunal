@@ -8,7 +8,7 @@ A Python library for the Choice FINX Trading API. Supports REST API, Interactive
 pip install kkunal
 ```
 
-All dependencies (`requests`, `pycryptodome`, `websockets`, `pandas`) are installed automatically.
+All dependencies (`requests`, `websockets`, `pandas`) are installed automatically.
 
 ---
 
@@ -19,10 +19,7 @@ from choice_api import ChoiceClient
 
 client = ChoiceClient(
     vendor_id="YOUR_VENDOR_ID",
-    vendor_key="YOUR_VENDOR_KEY",
-    api_key="YOUR_JWT_BEARER_TOKEN",
-    aes_key="YOUR_AES_KEY",
-    aes_iv="YOUR_AES_IV"
+    api_key="YOUR_JWT_BEARER_TOKEN"
 )
 
 # Login (TOTP flow is handled automatically)

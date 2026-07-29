@@ -4,8 +4,6 @@ import os
 import json
 import datetime
 from typing import Dict, Any, Optional
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
 
 from .orders import OrdersAPI
 from .portfolio import PortfolioAPI
@@ -19,12 +17,14 @@ class ChoiceClient:
     Main client for interacting with the Choice API.
     Handles authentication, session management, and provides access to other API modules.
     """
-    def __init__(self, vendor_id: str, vendor_key: str, api_key: str, aes_key: str, aes_iv: str, base_url: str = "https://finxomne.choiceindia.com"):
+    def __init__(
+        self,
+        vendor_id: str,
+        api_key: str,
+        base_url: str = "https://finxomne.choiceindia.com"
+    ):
         self.vendor_id = vendor_id
-        self.vendor_key = vendor_key
         self.api_key = api_key
-        self.aes_key = aes_key
-        self.aes_iv = aes_iv
         self.base_url = base_url.rstrip('/')
         
         self.session_id: Optional[str] = None
@@ -40,20 +40,14 @@ class ChoiceClient:
         self.historical = HistoricalAPI(self)
         self.scrip_master = ScripMaster()
 
-    def _get_encrypted_mobile(self, mobile_no: str) -> str:
-        """Encrypts the mobile number using AES CBC with the provided keys."""
-        aes_key_bytes = self.aes_key.encode('utf-8')
-        aes_iv_bytes = self.aes_iv.encode('utf-8')
-        cipher = AES.new(aes_key_bytes, AES.MODE_CBC, aes_iv_bytes)
-        padded = pad(mobile_no.encode('utf-8'), AES.block_size)
-        encrypted = cipher.encrypt(padded)
-        return base64.b64encode(encrypted).decode('utf-8')
+    def _get_encoded_mobile(self, mobile_no: str) -> str:
+        """Encodes the mobile number to Base64."""
+        return base64.b64encode(mobile_no.encode('utf-8')).decode('utf-8')
 
     def get_headers(self, include_auth: bool = True) -> Dict[str, str]:
         """Constructs headers required for API requests."""
         headers = {
             "VendorId": self.vendor_id,
-            "VendorKey": self.vendor_key,
             "Bearer": self.api_key,
             "Content-Type": "application/json"
         }
@@ -87,24 +81,24 @@ class ChoiceClient:
         Returns:
             The acquired SessionId.
         """
-        enc_mobile = self._get_encrypted_mobile(mobile_no)
+        encoded_mobile = self._get_encoded_mobile(mobile_no)
         
         # Step 1: Request TOTP
-        resp1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": enc_mobile}, require_auth=False)
+        resp1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False)
         if resp1.get("Status") != "Success":
             raise Exception(f"LoginTOTP failed: {resp1}")
             
         # Step 2: Get OTP generated
-        resp2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": enc_mobile}, require_auth=False)
+        resp2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False)
         if resp2.get("Status") != "Success":
             raise Exception(f"GetClientLoginTOTP failed: {resp2}")
-        
+            
         otp = resp2.get("Response")
         if not otp:
             raise Exception(f"OTP not found in response: {resp2}")
             
         # Step 3: Validate TOTP
-        resp3 = self.request("POST", "api/OpenAPIV1/ValidateTOTP", {"MobileNo": enc_mobile, "OTP": str(otp)}, require_auth=False)
+        resp3 = self.request("POST", "api/OpenAPIV1/ValidateTOTP", {"MobileNo": encoded_mobile, "OTP": str(otp)}, require_auth=False)
         if resp3.get("Status") != "Success":
             raise Exception(f"ValidateTOTP failed: {resp3}")
             
