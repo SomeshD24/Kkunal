@@ -8,7 +8,7 @@ from .scrip_master import ScripMaster
 from .websockets_interactive import InteractiveSocketClient
 from .websockets_feed import PriceFeedSocketClient
 
-__version__ = "1.1.3"
+__version__ = "1.1.4"
 __all__ = [
     "ChoiceClient",
     "BASE_URL_OMNE",

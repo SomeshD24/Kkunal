@@ -351,6 +351,7 @@ import asyncio
 from choice_api import InteractiveSocketClient
 
 async def main():
+    # token is the session_id obtained after login
     ws = InteractiveSocketClient(token=client.session_id)
 
     ws.on("ORD_NRML", lambda data: print(f"Order Update: {data}"))
@@ -359,7 +360,9 @@ async def main():
 
     await ws.connect()
 
-asyncio.run(main())
+# IMPORTANT: If running in a Jupyter Notebook, use `await main()` instead of `asyncio.run(main())`
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 **Event types:** `ORD_NRML` (order updates), `TRD_MSG` (trade confirmations), `MKT_STAT` (market open/close).
@@ -378,23 +381,27 @@ async def main():
     feed = PriceFeedSocketClient(
         host=client.bcast_ip,
         port=client.bcast_port,
-        vendor_id="YOUR_VENDOR_ID"
+        vendor_id=client.vendor_id,
+        access_token=client.access_token
     )
 
-    feed.on_message(lambda raw: print(f"Feed: {raw}"))
+    # Register callback for live market data
+    feed.on_message(lambda data: print(f"Market Data: {data}"))
 
-    # Start connection (sends login automatically)
+    # Connect to the feed (automatically sends login)
     asyncio.create_task(feed.connect())
+    await asyncio.sleep(2) # Give it a moment to connect
 
-    # Wait for connection, then subscribe
-    await asyncio.sleep(2)
+    # Subscribe to touchline and best five data
     feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
     feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
 
-    # Keep running
+    # Keep the task running
     await asyncio.sleep(3600)
 
-asyncio.run(main())
+# IMPORTANT: If running in a Jupyter Notebook, use `await main()` instead of `asyncio.run(main())`
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ---

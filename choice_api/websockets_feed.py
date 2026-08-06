@@ -10,10 +10,10 @@ class PriceFeedSocketClient:
     """
     Live Price Feed Socket using FIX3.0 delimited ASCII formats and Zlib compression.
     """
-    def __init__(self, host: str, port: int, user_id: str, access_token: str = ""):
+    def __init__(self, host: str, port: int, vendor_id: str, access_token: str = ""):
         self.host = host
         self.port = port
-        self.user_id = user_id
+        self.vendor_id = vendor_id
         self.access_token = access_token
         self.reader = None
         self.writer = None
@@ -70,7 +70,7 @@ class PriceFeedSocketClient:
 
     async def send_login(self):
         """Sends the Logon Request (101)."""
-        msg = f"63=FIX3.0|64=101|66={self._now()}|67={self.user_id}|68={self.access_token}|400=11|"
+        msg = f"63=FIX3.0|64=101|66={self._now()}|67={self.vendor_id}|68={self.access_token}|400=11|"
         final_msg = self._fix_message_length(msg)
         self._send_raw(final_msg)
 
