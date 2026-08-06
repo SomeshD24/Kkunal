@@ -1,6 +1,7 @@
 import asyncio
 import zlib
 import logging
+from datetime import datetime
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -9,10 +10,11 @@ class PriceFeedSocketClient:
     """
     Live Price Feed Socket using FIX3.0 delimited ASCII formats and Zlib compression.
     """
-    def __init__(self, host: str, port: int, user_id: str):
+    def __init__(self, host: str, port: int, user_id: str, access_token: str = ""):
         self.host = host
         self.port = port
         self.user_id = user_id
+        self.access_token = access_token
         self.reader = None
         self.writer = None
         self._connected = False
@@ -43,51 +45,67 @@ class PriceFeedSocketClient:
             await self.writer.wait_closed()
             logger.info("Disconnected from Price Feed Socket.")
 
-    async def send_login(self):
-        """Sends the Logon Request (101)."""
-        # Format: 63=FIX3.0|64=101|65=66|66=2022-05-04 133022|400=11|67=USERID|68=|
-        login_msg = f"63=FIX3.0|64=101|65=66|66=2023-03-06 113929|67={self.user_id}|68=|400=11"
-        self._send_raw(login_msg)
+    def _now(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    def subscribe_touchline(self, session_id: str, segment_id: int, token: int):
-        """Subscribes to Touchline (Market Data)."""
-        # Message code 206
-        msg = f"63=FIX3.0|64=206|65=107|66=2023-02-11 19:02:31|1=1$7={token}|230=1|4={session_id}|"
-        self._send_raw(msg)
+    def _fix_message_length(self, msg: str) -> str:
+        parts = [p for p in msg.split("|") if p and not p.startswith("65=")]
+        temp = "|".join(parts) + "|"
+        body_length = len(temp)
+        parts.insert(2, f"65={body_length}")
+        return "|".join(parts) + "|"
 
-    def subscribe_best_five(self, session_id: str, segment_id: int, token: int):
-        """Subscribes to Best Five (Depth Data)."""
-        # Message code 127
-        msg = f"63=FIX3.0|64=127|65=84|66=2023-03-06 19:02:31|1=1|7={token}|230=1|4={session_id}"
-        self._send_raw(msg)
+    def _pack_message(self, msg: str) -> bytes:
+        compressed = zlib.compress(msg.encode("ascii"), level=6)
+        packet_len = len(compressed)
+        header = b"\x05" + f"{packet_len:05d}".encode('ascii')
+        return header + compressed
 
     def _send_raw(self, msg: str):
-        """Sends a raw uncompressed message (first byte = '2', next 5 bytes = length)."""
-        length_str = str(len(msg)).zfill(5)
-        packet = f"2{length_str}{msg}".encode('utf-8')
+        """Sends a compressed message."""
+        packet = self._pack_message(msg)
         if self.writer:
             self.writer.write(packet)
             logger.debug(f"Sent: {msg}")
+
+    async def send_login(self):
+        """Sends the Logon Request (101)."""
+        msg = f"63=FIX3.0|64=101|66={self._now()}|67={self.user_id}|68={self.access_token}|400=11|"
+        final_msg = self._fix_message_length(msg)
+        self._send_raw(final_msg)
+
+    def subscribe_touchline(self, session_id: str, segment_id: int, token: int):
+        """Subscribes to Touchline (Market Data)."""
+        msg = f"63=FIX3.0|64=206|66={self._now()}|1={segment_id}$7={token}|230=1|4={session_id}|"
+        final_msg = self._fix_message_length(msg)
+        self._send_raw(final_msg)
+
+    def subscribe_best_five(self, session_id: str, segment_id: int, token: int):
+        """Subscribes to Best Five (Depth Data)."""
+        msg = f"63=FIX3.0|64=127|66={self._now()}|1={segment_id}|7={token}|230=1|4={session_id}|"
+        final_msg = self._fix_message_length(msg)
+        self._send_raw(final_msg)
 
     async def _listen(self):
         """Listens and decompresses incoming messages."""
         try:
             while self._connected and self.reader:
-                # Read 6 byte header: 1 byte type, 5 bytes length
                 header = await self.reader.readexactly(6)
-                msg_type = chr(header[0])
+                msg_type = header[0:1] # b'\x05' or b'\x02'
                 msg_len = int(header[1:6].decode('ascii'))
                 
                 payload = await self.reader.readexactly(msg_len)
                 
-                if msg_type == '5': # Compressed
+                if msg_type == b'\x05': # Compressed
                     try:
                         decompressed = zlib.decompress(payload)
-                        self._process_message(decompressed.decode('ascii', errors='ignore'))
+                        text = decompressed.decode("ascii", errors="ignore")
+                        self._process_packets(text)
                     except Exception as e:
                         logger.error(f"Zlib decompression failed: {e}")
-                elif msg_type == '2': # Uncompressed
-                    self._process_message(payload.decode('ascii', errors='ignore'))
+                elif msg_type == b'\x02': # Uncompressed
+                    text = payload.decode("ascii", errors="ignore")
+                    self._process_packets(text)
                 else:
                     logger.warning(f"Unknown message format indicator: {msg_type}")
         except asyncio.IncompleteReadError:
@@ -96,11 +114,13 @@ class PriceFeedSocketClient:
         except Exception as e:
             logger.error(f"Feed listen error: {e}")
 
-    def _process_message(self, raw_str: str):
-        """Parses the FIX3.0 pipe delimited string."""
-        # Simple split by pipe
-        for cb in self._callbacks:
-            try:
-                cb(raw_str)
-            except Exception as e:
-                logger.error(f"Feed callback error: {e}")
+    def _process_packets(self, text: str):
+        text = text.replace("\x00", "")
+        for p in text.split("\x02"):
+            p = p.strip()
+            if p:
+                for cb in self._callbacks:
+                    try:
+                        cb(p)
+                    except Exception as e:
+                        logger.error(f"Feed callback error: {e}")

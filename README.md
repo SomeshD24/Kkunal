@@ -378,7 +378,7 @@ async def main():
     feed = PriceFeedSocketClient(
         host=client.bcast_ip,
         port=client.bcast_port,
-        user_id="YOUR_USER_ID"
+        vendor_id="YOUR_VENDOR_ID"
     )
 
     feed.on_message(lambda raw: print(f"Feed: {raw}"))
