@@ -109,13 +109,75 @@ class PriceFeedSocketClient:
 
             packets = self._unpack_packet(message)
             for packet in packets:
-                for cb in self._callbacks:
-                    try:
-                        cb(packet)
-                    except Exception as e:
-                        logger.error(f"Feed callback error: {e}")
+                self._process_packets(packet)
         except Exception as e:
             logger.error(f"Error in _on_message: {e}")
+
+    def _parse_fix(self, text: str) -> dict:
+        parsed = {}
+        idx = text.find("63=")
+        if idx != -1:
+            text = text[idx:]
+            
+        for item in text.split("|"):
+            if "=" in item:
+                k, v = item.split("=", 1)
+                parsed[k] = v
+        return parsed
+
+    def _format_market_data(self, parsed: dict) -> dict:
+        msg_code = parsed.get("64")
+        if msg_code not in ["209", "128"]:
+            return parsed
+            
+        formatted = {
+            "MessageType": msg_code,
+            "Token": parsed.get("7"),
+            "Raw": parsed
+        }
+        
+        price_fields = {
+            "8": "LTP", "75": "Open", "76": "Close", 
+            "77": "High", "78": "Low", "80": "ATP", "250": "LowerCircuit",
+        }
+        
+        for fix_key, name in price_fields.items():
+            val = parsed.get(fix_key)
+            if val:
+                try:
+                    formatted[name] = float(val)
+                except ValueError:
+                    pass
+                    
+        int_fields = {
+            "79": "Volume", "88": "OpenInterest", 
+            "81": "TotalBuyQty", "82": "TotalSellQty"
+        }
+        
+        for fix_key, name in int_fields.items():
+            val = parsed.get(fix_key)
+            if val:
+                try:
+                    formatted[name] = int(val)
+                except ValueError:
+                    pass
+
+        return formatted
+
+    def _process_packets(self, text: str):
+        text = text.replace("\x00", "")
+        for p in text.split("\x02"):
+            p = p.strip()
+            if p:
+                parsed = self._parse_fix(p)
+                if not parsed:
+                    continue
+                formatted = self._format_market_data(parsed)
+                for cb in self._callbacks:
+                    try:
+                        cb(formatted)
+                    except Exception as e:
+                        logger.error(f"Feed callback error: {e}")
 
     def _unpack_packet(self, data: bytes):
         packets = []
