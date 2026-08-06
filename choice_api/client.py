@@ -11,6 +11,7 @@ from .funds import FundsAPI
 from .market import MarketAPI
 from .historical import HistoricalAPI
 from .scrip_master import ScripMaster
+from .indicators import IndicatorsAPI
 
 # Available base URL endpoints
 BASE_URL_OMNE = "https://finxomne.choiceindia.com"  # Default / legacy endpoint
@@ -46,7 +47,9 @@ class ChoiceClient:
         self.funds = FundsAPI(self)
         self.market = MarketAPI(self)
         self.historical = HistoricalAPI(self)
+        self.indicators = IndicatorsAPI(self)
         self.scrip_master = ScripMaster()
+
 
     def _get_encoded_mobile(self, mobile_no: str) -> str:
         """Encodes the mobile number to Base64."""

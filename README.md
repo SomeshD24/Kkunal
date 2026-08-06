@@ -342,6 +342,86 @@ The returned DataFrame has columns: `Time`, `Open`, `High`, `Low`, `Close`, `Vol
 
 ---
 
+## Technical Indicators
+
+`kkunal` includes a built-in vectorized Technical Analysis indicator engine based on `pandas` and `numpy`. No external C-dependencies required.
+
+### Supported Indicators
+
+| Category | Indicators |
+|---|---|
+| **Trend** | SMA, EMA, DEMA, TEMA, WMA, MACD, ADX, Supertrend, Parabolic SAR, Ichimoku Cloud |
+| **Momentum** | RSI, Stochastic Oscillator (%K, %D), CCI, Williams %R |
+| **Volatility** | Bollinger Bands (with %B), ATR, Donchian Channel |
+| **Volume** | VWAP, OBV |
+| **Utilities** | Crossover, Crossunder, Heikin Ashi, Pivot Points (Standard/Fibonacci/Camarilla) |
+
+### Usage Methods
+
+#### 1. Fetch Historical Data with Indicators in One Step
+```python
+# All indicators
+df = client.historical.get_historical_data_with_indicators(
+    segment_id=1, token=2885,
+    from_date="2024-01-01", to_date="2024-12-31", resolution="D",
+    indicators="all"
+)
+
+# Or select specific indicators
+df = client.historical.get_historical_data_with_indicators(
+    segment_id=1, token=2885,
+    from_date="2024-01-01", to_date="2024-12-31", resolution="D",
+    indicators=["rsi", "macd", "supertrend", "bb", "ichimoku", "pivot"]
+)
+```
+
+#### 2. Apply via `client.indicators`
+```python
+df = client.historical.get_historical_data(1, 2885, "2024-01-01", "2024-12-31", "D")
+
+# Add specific indicators
+df = client.indicators.add_rsi(df, period=14)
+df = client.indicators.add_macd(df)
+df = client.indicators.add_supertrend(df, period=10, multiplier=3.0)
+df = client.indicators.add_bollinger_bands(df, period=20, std_dev=2.0)
+df = client.indicators.add_ichimoku(df)
+df = client.indicators.add_parabolic_sar(df)
+df = client.indicators.add_pivot_points(df, method="fibonacci")
+df = client.indicators.add_heikin_ashi(df)
+
+# Or add all indicators at once (with customizable periods)
+df_all = client.indicators.add_all(df, sma_period=50, ema_period=50, rsi_period=21)
+```
+
+#### 3. Standalone Indicator Functions
+```python
+from choice_api import rsi, macd, supertrend, bollinger_bands, ichimoku, pivot_points
+
+rsi_series = rsi(df, period=14)
+macd_df = macd(df, fast_period=12, slow_period=26, signal_period=9)
+st_df = supertrend(df, period=10, multiplier=3.0)
+bb_df = bollinger_bands(df, period=20, std_dev=2.0)  # Includes BB_PercentB
+ichi_df = ichimoku(df)
+pp_df = pivot_points(df, method="camarilla")
+```
+
+#### 4. Signal Crossover Detection
+```python
+from choice_api import crossover, crossunder, ema
+
+ema_9 = ema(df, period=9)
+ema_21 = ema(df, period=21)
+
+buy_signals = crossover(ema_9, ema_21)    # EMA 9 crosses above EMA 21
+sell_signals = crossunder(ema_9, ema_21)   # EMA 9 crosses below EMA 21
+
+print(f"Buy signals on dates: {df['Time'][buy_signals].tolist()}")
+```
+
+---
+
+
+
 ## Interactive WebSockets
 
 Receives live order updates, trade confirmations, and market status events.
@@ -374,34 +454,34 @@ if __name__ == "__main__":
 Receives live Level 1 (Touchline) and Level 2 (Best Five / Depth) market data via TCP socket with Zlib compression.
 
 ```python
+import asyncio
 from choice_api import PriceFeedSocketClient
-import time
 
-# Feed runs flawlessly in the background without asyncio conflicts!
-feed = PriceFeedSocketClient(
-    vendor_id=client.vendor_id,
-    access_token=client.access_token
-)
+async def main():
+    feed = PriceFeedSocketClient(
+        host=client.bcast_ip,
+        port=client.bcast_port,
+        vendor_id=client.vendor_id,
+        access_token=client.access_token
+    )
 
-# Register callback for live market data
-feed.on_message(lambda data: print(f"Market Data: {data}"))
+    # Register callback for live market data
+    feed.on_message(lambda data: print(f"Market Data: {data}"))
 
-# Connect to the feed (automatically sends login)
-feed.start_websocket()
+    # Connect to the feed (automatically sends login)
+    asyncio.create_task(feed.connect())
+    await asyncio.sleep(2) # Give it a moment to connect
 
-# Give it a moment to connect
-time.sleep(2) 
+    # Subscribe to touchline and best five data
+    feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
+    feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
 
-# Subscribe to touchline and best five data
-feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
-feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
+    # Keep the task running
+    await asyncio.sleep(3600)
 
-# Keep your script running
-try:
-    while True:
-        time.sleep(1)
-except KeyboardInterrupt:
-    feed.stop_websocket()
+# IMPORTANT: If running in a Jupyter Notebook, use `await main()` instead of `asyncio.run(main())`
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ---

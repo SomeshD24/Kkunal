@@ -1,4 +1,4 @@
-from typing import Dict, Any, Union, TYPE_CHECKING
+from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 from datetime import datetime
 
 if TYPE_CHECKING:
@@ -85,3 +85,84 @@ class HistoricalAPI:
         # Return empty DataFrame to maintain return type consistency, 
         # as self.client.request raises Exception for HTTP errors.
         return pd.DataFrame()
+
+    def get_historical_data_with_indicators(
+        self,
+        segment_id: int,
+        token: int,
+        from_date: Union[str, int],
+        to_date: Union[str, int],
+        resolution: str,
+        indicators: Optional[Union[str, list]] = "all"
+    ) -> "pd.DataFrame":
+        """
+        Retrieves historical chart data and automatically computes specified technical indicators.
+
+        Args:
+            segment_id: Exchange Segment ID (e.g., 1 for NSE Cash).
+            token: Instrument token.
+            from_date: Start date.
+            to_date: End date.
+            resolution: Timeframe (e.g., '1', '5', 'D').
+            indicators: 'all' or list of indicator names, e.g., ['rsi', 'macd', 'supertrend', 'bb']
+
+        Returns:
+            Pandas DataFrame containing OHLCV and requested technical indicator columns.
+        """
+        df = self.get_historical_data(segment_id, token, from_date, to_date, resolution)
+        if df.empty:
+            return df
+
+        if hasattr(self.client, "indicators"):
+            ind_api = self.client.indicators
+            if indicators == "all" or indicators is None:
+                return ind_api.add_all(df)
+
+            if isinstance(indicators, list):
+                for ind in indicators:
+                    ind_lower = str(ind).lower()
+                    if ind_lower in ("rsi",):
+                        df = ind_api.add_rsi(df)
+                    elif ind_lower in ("macd",):
+                        df = ind_api.add_macd(df)
+                    elif ind_lower in ("sma",):
+                        df = ind_api.add_sma(df)
+                    elif ind_lower in ("ema",):
+                        df = ind_api.add_ema(df)
+                    elif ind_lower in ("dema",):
+                        df = ind_api.add_dema(df)
+                    elif ind_lower in ("tema",):
+                        df = ind_api.add_tema(df)
+                    elif ind_lower in ("wma",):
+                        df = ind_api.add_wma(df)
+                    elif ind_lower in ("bb", "bollinger", "bollinger_bands"):
+                        df = ind_api.add_bollinger_bands(df)
+                    elif ind_lower in ("atr",):
+                        df = ind_api.add_atr(df)
+                    elif ind_lower in ("supertrend", "st"):
+                        df = ind_api.add_supertrend(df)
+                    elif ind_lower in ("adx",):
+                        df = ind_api.add_adx(df)
+                    elif ind_lower in ("stoch", "stochastic"):
+                        df = ind_api.add_stochastic(df)
+                    elif ind_lower in ("cci",):
+                        df = ind_api.add_cci(df)
+                    elif ind_lower in ("williams_r", "williams", "wr"):
+                        df = ind_api.add_williams_r(df)
+                    elif ind_lower in ("vwap",):
+                        df = ind_api.add_vwap(df)
+                    elif ind_lower in ("obv",):
+                        df = ind_api.add_obv(df)
+                    elif ind_lower in ("psar", "parabolic_sar", "parabolic"):
+                        df = ind_api.add_parabolic_sar(df)
+                    elif ind_lower in ("ichimoku", "ichi"):
+                        df = ind_api.add_ichimoku(df)
+                    elif ind_lower in ("donchian", "donchian_channel", "dc"):
+                        df = ind_api.add_donchian_channel(df)
+                    elif ind_lower in ("ha", "heikin_ashi", "heikinashi"):
+                        df = ind_api.add_heikin_ashi(df)
+                    elif ind_lower in ("pivot", "pivot_points", "pp"):
+                        df = ind_api.add_pivot_points(df)
+
+        return df
+
