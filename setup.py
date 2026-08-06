@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kkunal",
-    version="1.1.4",
+    version="1.1.5",
     author="Kkunal",
     description="Kkunal - Python library for Choice FINX Trading API",
     long_description=long_description,
@@ -19,7 +19,7 @@ setup(
     python_requires=">=3.7",
     install_requires=[
         "requests>=2.28.0",
-        "websockets>=11.0.3",
+        "websocket-client>=1.6.0",
         "pandas>=1.3.0",
     ],
 )

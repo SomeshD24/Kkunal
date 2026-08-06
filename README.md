@@ -374,34 +374,34 @@ if __name__ == "__main__":
 Receives live Level 1 (Touchline) and Level 2 (Best Five / Depth) market data via TCP socket with Zlib compression.
 
 ```python
-import asyncio
 from choice_api import PriceFeedSocketClient
+import time
 
-async def main():
-    feed = PriceFeedSocketClient(
-        host=client.bcast_ip,
-        port=client.bcast_port,
-        vendor_id=client.vendor_id,
-        access_token=client.access_token
-    )
+# Feed runs flawlessly in the background without asyncio conflicts!
+feed = PriceFeedSocketClient(
+    vendor_id=client.vendor_id,
+    access_token=client.access_token
+)
 
-    # Register callback for live market data
-    feed.on_message(lambda data: print(f"Market Data: {data}"))
+# Register callback for live market data
+feed.on_message(lambda data: print(f"Market Data: {data}"))
 
-    # Connect to the feed (automatically sends login)
-    asyncio.create_task(feed.connect())
-    await asyncio.sleep(2) # Give it a moment to connect
+# Connect to the feed (automatically sends login)
+feed.start_websocket()
 
-    # Subscribe to touchline and best five data
-    feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
-    feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
+# Give it a moment to connect
+time.sleep(2) 
 
-    # Keep the task running
-    await asyncio.sleep(3600)
+# Subscribe to touchline and best five data
+feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
+feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
 
-# IMPORTANT: If running in a Jupyter Notebook, use `await main()` instead of `asyncio.run(main())`
-if __name__ == "__main__":
-    asyncio.run(main())
+# Keep your script running
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    feed.stop_websocket()
 ```
 
 ---
