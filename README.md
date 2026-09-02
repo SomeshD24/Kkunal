@@ -198,6 +198,14 @@ trades = client.orders.get_trade_book()
 
 Returns order-related messages for a given request ID.
 
+### `client.orders.get_margin(...)` / `calculate_margin(...)`
+
+Convenience method to calculate margin requirements before placing orders. Same syntax as [`client.funds.get_margin`](#clientfundsget_margin--calculatemargin).
+
+```python
+margin = client.orders.get_margin(segment_id=2, token=48552, qty=425)
+```
+
 ---
 
 ## Portfolio
@@ -255,6 +263,41 @@ funds = client.funds.get_funds_view()
 ### `client.funds.get_funds_view_new()`
 
 Returns funds summary in the new format.
+
+### `client.funds.get_margin(...)` / `calculate_margin(...)`
+
+Calculates required margin for single or multiple contracts.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `segment_id` | `int` | `1` = NSE Cash, `2` = NSE F&O, `3` = BSE Cash |
+| `token_qty` | `str` or `list` | Pipe-separated string (`"48552|425"`), tilde-separated string (`"48552|425~48553|100"`), or list of tuples `[(48552, 425), (48553, 100)]` / dicts `[{"token": 48552, "qty": 425}]` |
+| `mode` | `int` | Optional. Mode integer (default `1`) |
+| `device_id` | `str` | Optional. Device ID string (default `"MAC"`) |
+| `token` | `int` / `str` | Optional. Single token shorthand (used with `qty`) |
+| `qty` | `int` | Optional. Single quantity shorthand (used with `token`) |
+
+```python
+# Single contract using string
+margin = client.funds.get_margin(segment_id=2, token_qty="48552|425")
+
+# Single contract using token and qty shorthand
+margin = client.funds.get_margin(segment_id=2, token=48552, qty=425)
+
+# Multiple contracts using string
+margin = client.funds.get_margin(segment_id=2, token_qty="48552|425~48553|100")
+
+# Multiple contracts using list of tuples
+margin = client.funds.get_margin(
+    segment_id=2,
+    token_qty=[(48552, 425), (48553, 100)]
+)
+
+print(margin)
+# {"Status": "Success", "Response": { ... }, "Reason": ""}
+```
+
+*(Also accessible via `client.orders.get_margin(...)` or `calculate_margin`)*
 
 ### `client.funds.process_payout(amount, bank_acc_no, product_type=0)`
 

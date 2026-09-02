@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union, List, Tuple
 
 class OrdersAPI:
     def __init__(self, client):
@@ -91,3 +91,27 @@ class OrdersAPI:
     def get_order_messages(self, req_id: str) -> Dict[str, Any]:
         """Retrieves order messages."""
         return self.client.request("POST", "api/OpenAPI/OrderMessages", {"ReqId": req_id})
+
+    def get_margin(
+        self,
+        segment_id: int,
+        token_qty: Optional[Union[str, List[Union[Tuple[Any, Any], Dict[str, Any], str]]]] = None,
+        mode: int = 1,
+        device_id: str = "MAC",
+        token: Optional[Union[int, str]] = None,
+        qty: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Calculates required margin for single or multiple contracts.
+        Convenience wrapper delegating to FundsAPI.get_margin.
+        """
+        return self.client.funds.get_margin(
+            segment_id=segment_id,
+            token_qty=token_qty,
+            mode=mode,
+            device_id=device_id,
+            token=token,
+            qty=qty
+        )
+
+    calculate_margin = get_margin
