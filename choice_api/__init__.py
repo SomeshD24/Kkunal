@@ -7,8 +7,29 @@ from .historical import HistoricalAPI
 from .scrip_master import ScripMaster
 from .websockets_interactive import InteractiveSocketClient
 from .websockets_feed import PriceFeedSocketClient
+from .exceptions import (
+    ChoiceAPIError,
+    AuthenticationError,
+    APIResponseError,
+    NetworkError,
+    InvalidResponseError,
+    ScripMasterError,
+    WebSocketError,
+)
+from .constants import (
+    Segment,
+    Side,
+    Validity,
+    OrderType,
+    ProductType,
+    Resolution,
+    to_paisa,
+    to_rupees,
+)
 from .indicators import (
     IndicatorsAPI,
+    INDICATOR_ALIASES,
+    resolve_indicator,
     # Signal Utilities
     crossover,
     crossunder,
@@ -40,7 +61,7 @@ from .indicators import (
     pivot_points,
 )
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 __all__ = [
     "ChoiceClient",
     "BASE_URL_OMNE",
@@ -54,6 +75,26 @@ __all__ = [
     "InteractiveSocketClient",
     "PriceFeedSocketClient",
     "IndicatorsAPI",
+    # Exceptions
+    "ChoiceAPIError",
+    "AuthenticationError",
+    "APIResponseError",
+    "NetworkError",
+    "InvalidResponseError",
+    "ScripMasterError",
+    "WebSocketError",
+    # Constants
+    "Segment",
+    "Side",
+    "Validity",
+    "OrderType",
+    "ProductType",
+    "Resolution",
+    "to_paisa",
+    "to_rupees",
+    # Indicator name resolution
+    "INDICATOR_ALIASES",
+    "resolve_indicator",
     # Signal Utilities
     "crossover",
     "crossunder",

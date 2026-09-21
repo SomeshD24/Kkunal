@@ -1,6 +1,8 @@
 from typing import Dict, Any, Optional, Union, TYPE_CHECKING
 from datetime import datetime
 
+from .indicators import INDICATOR_ALIASES, resolve_indicator
+
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -35,6 +37,40 @@ class HistoricalAPI:
             ) from e
         return int((dt - epoch_1980).total_seconds())
         
+    def get_by_symbol(
+        self,
+        symbol: str,
+        from_date: Union[str, int],
+        to_date: Union[str, int],
+        resolution: str = "D",
+        segment: Optional[int] = None,
+        indicators: Optional[Union[str, list]] = None
+    ) -> "pd.DataFrame":
+        """
+        Fetches historical data by symbol, resolving the token via the Scrip Master.
+
+        Example:
+            >>> df = client.historical.get_by_symbol("RELIANCE", "2024-01-01", "2024-06-01")
+            >>> df = client.historical.get_by_symbol("RELIANCE", "2024-01-01", "2024-06-01",
+            ...                                      indicators=["rsi", "macd"])
+
+        Args:
+            symbol: Symbol or SecDesc, e.g. 'RELIANCE'.
+            segment: Restrict the lookup to one segment when the symbol is listed
+                in several (e.g. Segment.NSE_CASH).
+            indicators: Same values accepted by get_historical_data_with_indicators.
+                Left as None, plain OHLCV is returned.
+
+        Raises:
+            KeyError: if the symbol is not in the scrip master.
+        """
+        segment_id, token = self.client.scrip_master.resolve(symbol, segment=segment)
+        if indicators is None:
+            return self.get_historical_data(segment_id, token, from_date, to_date, resolution)
+        return self.get_historical_data_with_indicators(
+            segment_id, token, from_date, to_date, resolution, indicators=indicators
+        )
+
     def get_historical_data(self, segment_id: int, token: int, from_date: Union[str, int], to_date: Union[str, int], resolution: str) -> "pd.DataFrame":
         """
         Retrieves historical chart data (e.g., OHLCV) as a Pandas DataFrame.
@@ -118,7 +154,9 @@ class HistoricalAPI:
             from_date: Start date.
             to_date: End date.
             resolution: Timeframe (e.g., '1', '5', 'D').
-            indicators: 'all' or list of indicator names, e.g., ['rsi', 'macd', 'supertrend', 'bb']
+            indicators: 'all' for every indicator, 'core' for the nine most common
+                ones, or a list of names/shorthands e.g. ['rsi', 'macd', 'st', 'bb'].
+                An unrecognised name raises ValueError rather than being skipped.
 
         Returns:
             Pandas DataFrame containing OHLCV and requested technical indicator columns.
@@ -131,52 +169,20 @@ class HistoricalAPI:
             ind_api = self.client.indicators
             if indicators == "all" or indicators is None:
                 return ind_api.add_all(df)
+            if indicators == "core":
+                return ind_api.add_all(df, core_only=True)
 
-            if isinstance(indicators, list):
-                for ind in indicators:
-                    ind_lower = str(ind).lower()
-                    if ind_lower in ("rsi",):
-                        df = ind_api.add_rsi(df)
-                    elif ind_lower in ("macd",):
-                        df = ind_api.add_macd(df)
-                    elif ind_lower in ("sma",):
-                        df = ind_api.add_sma(df)
-                    elif ind_lower in ("ema",):
-                        df = ind_api.add_ema(df)
-                    elif ind_lower in ("dema",):
-                        df = ind_api.add_dema(df)
-                    elif ind_lower in ("tema",):
-                        df = ind_api.add_tema(df)
-                    elif ind_lower in ("wma",):
-                        df = ind_api.add_wma(df)
-                    elif ind_lower in ("bb", "bollinger", "bollinger_bands"):
-                        df = ind_api.add_bollinger_bands(df)
-                    elif ind_lower in ("atr",):
-                        df = ind_api.add_atr(df)
-                    elif ind_lower in ("supertrend", "st"):
-                        df = ind_api.add_supertrend(df)
-                    elif ind_lower in ("adx",):
-                        df = ind_api.add_adx(df)
-                    elif ind_lower in ("stoch", "stochastic"):
-                        df = ind_api.add_stochastic(df)
-                    elif ind_lower in ("cci",):
-                        df = ind_api.add_cci(df)
-                    elif ind_lower in ("williams_r", "williams", "wr"):
-                        df = ind_api.add_williams_r(df)
-                    elif ind_lower in ("vwap",):
-                        df = ind_api.add_vwap(df)
-                    elif ind_lower in ("obv",):
-                        df = ind_api.add_obv(df)
-                    elif ind_lower in ("psar", "parabolic_sar", "parabolic"):
-                        df = ind_api.add_parabolic_sar(df)
-                    elif ind_lower in ("ichimoku", "ichi"):
-                        df = ind_api.add_ichimoku(df)
-                    elif ind_lower in ("donchian", "donchian_channel", "dc"):
-                        df = ind_api.add_donchian_channel(df)
-                    elif ind_lower in ("ha", "heikin_ashi", "heikinashi"):
-                        df = ind_api.add_heikin_ashi(df)
-                    elif ind_lower in ("pivot", "pivot_points", "pp"):
-                        df = ind_api.add_pivot_points(df)
+            if isinstance(indicators, str):
+                indicators = [indicators]
+
+            if isinstance(indicators, (list, tuple)):
+                unknown = [i for i in indicators if resolve_indicator(i) is None]
+                if unknown:
+                    raise ValueError(
+                        f"Unknown indicator(s): {unknown}. "
+                        f"Available: {', '.join(sorted(INDICATOR_ALIASES))}"
+                    )
+                df = ind_api.add(df, *indicators)
 
         return df
 

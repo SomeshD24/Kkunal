@@ -35,6 +35,23 @@ session_id = client.login(mobile_no="1234567890")
 print(f"Session ID: {session_id}")
 ```
 
+Pass `session_file=` and the session is reused for the rest of the day instead of
+logging in again — sessions expire daily, so this is safe to leave switched on:
+
+```python
+client.login(mobile_no="1234567890", session_file="session.json")
+```
+
+`ChoiceClient` is also a context manager, so the session is always logged off:
+
+```python
+with ChoiceClient(vendor_id="...", api_key="...") as client:
+    client.login(mobile_no="1234567890", session_file="session.json")
+    print(client.is_authenticated)   # True
+    ...
+# logged off automatically on exit
+```
+
 All HTTP calls use a 30 second timeout by default. Override it per client:
 
 ```python
@@ -59,7 +76,86 @@ else:
 
 ---
 
+## Constants
+
+Named constants replace the magic numbers and short codes the API expects:
+
+```python
+from choice_api import Segment, Side, OrderType, ProductType, Validity, Resolution, to_paisa
+
+client.orders.place_order(
+    segment_id=Segment.NSE_FO,          # 2
+    token=48552,
+    order_type=OrderType.LIMIT,         # 'RL_LIMIT'
+    bs=Side.BUY,                        # 1
+    qty=15,
+    price=to_paisa(1300.50),            # 130050
+    trigger_price=0,
+    validity=Validity.DAY,              # 1
+    product_type=ProductType.INTRADAY,  # 'M'
+)
+```
+
+| Constant | Values |
+|---|---|
+| `Segment` | `NSE_CASH`, `NSE_FO`, `BSE_CASH`, `BSE_FO`, `NSE_CURRENCY`, `MCX` |
+| `Side` | `BUY`, `SELL` |
+| `OrderType` | `LIMIT`, `STOP_LOSS_LIMIT` |
+| `ProductType` | `INTRADAY`, `DELIVERY` |
+| `Validity` | `DAY`, `IOC` |
+| `Resolution` | `MIN_1`, `MIN_3`, `MIN_5`, `MIN_10`, `MIN_15`, `MIN_30`, `HOUR_1`, `DAY`, `WEEK`, `MONTH` |
+
+Prices are in **paisa**, not rupees. `to_paisa(1300.50)` → `130050`, and
+`to_rupees(130050)` → `1300.50`.
+
+---
+
+## Error Handling
+
+Every failure raises a typed exception deriving from `ChoiceAPIError`, so you can
+tell an expired session apart from a network blip or a rejected order:
+
+```python
+from choice_api import ChoiceAPIError, AuthenticationError, NetworkError
+
+try:
+    client.orders.place_order(...)
+except AuthenticationError:
+    client.login(mobile_no="1234567890")   # session expired, log back in
+except NetworkError:
+    ...                                    # timeout or connection reset, safe to retry
+except ChoiceAPIError as e:
+    print(e.status_code, e.endpoint, e.response)
+```
+
+| Exception | Raised when |
+|---|---|
+| `AuthenticationError` | Login failed, or the session is missing/expired (401/403) |
+| `APIResponseError` | The request reached the API but was rejected |
+| `NetworkError` | Timeout, DNS failure or connection reset |
+| `InvalidResponseError` | A 2xx response whose body was not valid JSON |
+| `ScripMasterError` | The daily scrip master could not be downloaded or parsed |
+| `WebSocketError` | A live feed or interactive socket failed |
+
+---
+
 ## Scrip Master
+
+The daily instrument file is cached on disk per day, so repeated runs reuse it
+instead of re-downloading several megabytes. Pass `fetch(force=True)` to refresh,
+or `ScripMaster(cache_dir=...)` to control where it lives.
+
+### `resolve(symbol, segment=None)`
+
+Resolves a symbol straight to the `(segment_id, token)` pair the other APIs want.
+
+```python
+segment_id, token = client.scrip_master.resolve("RELIANCE", segment=Segment.NSE_CASH)
+# (1, 2885)
+```
+
+Raises `KeyError` if the symbol is not listed. With no `segment`, the first match is
+returned and the other segments are logged.
 
 The Scrip Master CSV is automatically downloaded when you log in. It maps instrument symbols to their tokens, lot sizes, and other metadata.
 
@@ -363,6 +459,22 @@ touchline = client.market.get_multiple_touchline("1@2885,1@11536")
 
 ## Historical Data
 
+### `client.historical.get_by_symbol(symbol, from_date, to_date, resolution='D', segment=None, indicators=None)`
+
+Fetches candles by symbol, resolving the token through the Scrip Master — no token
+lookup needed.
+
+```python
+df = client.historical.get_by_symbol("RELIANCE", "2024-01-01", "2024-06-01")
+
+# with indicators in the same call
+df = client.historical.get_by_symbol(
+    "RELIANCE", "2024-01-01", "2024-06-01",
+    resolution=Resolution.DAY,
+    indicators=["rsi", "macd", "supertrend"],
+)
+```
+
 ### `client.historical.get_historical_data(segment_id, token, from_date, to_date, resolution)`
 
 Returns historical OHLCV data as a **Pandas DataFrame**.
@@ -408,9 +520,13 @@ The returned DataFrame has columns: `Time`, `Open`, `High`, `Low`, `Close`, `Vol
 
 ### Usage Methods
 
+> **Warmup:** every indicator returns `NaN` until its lookback window is full, so a
+> value only ever comes from a complete window. Use `df.dropna()` before feeding
+> results into a strategy.
+
 #### 1. Fetch Historical Data with Indicators in One Step
 ```python
-# All indicators
+# Every indicator (all 21)
 df = client.historical.get_historical_data_with_indicators(
     segment_id=1, token=2885,
     from_date="2024-01-01", to_date="2024-12-31", resolution="D",
@@ -424,6 +540,10 @@ df = client.historical.get_historical_data_with_indicators(
     indicators=["rsi", "macd", "supertrend", "bb", "ichimoku", "pivot"]
 )
 ```
+
+`indicators` accepts `'all'` (every indicator), `'core'` (the nine most common ones),
+or a list of names and shorthands such as `['rsi', 'macd', 'st', 'bb']`. An
+unrecognised name raises `ValueError` rather than being silently skipped.
 
 #### 2. Apply via `client.indicators`
 ```python
@@ -439,7 +559,11 @@ df = client.indicators.add_parabolic_sar(df)
 df = client.indicators.add_pivot_points(df, method="fibonacci")
 df = client.indicators.add_heikin_ashi(df)
 
-# Or add all indicators at once (with customizable periods)
+# Pick indicators by name, chosen at runtime
+df = client.indicators.add(df, "rsi", "macd", "supertrend")
+df = client.indicators.add(df, "rsi", period=21)
+
+# Or add every indicator at once (with customizable periods)
 df_all = client.indicators.add_all(df, sma_period=50, ema_period=50, rsi_period=21)
 ```
 

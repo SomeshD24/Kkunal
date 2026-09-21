@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="kkunal",
-    version="1.3.1",
+    version="1.4.0",
     author="Kkunal",
     description="Kkunal - Python library for Choice FINX Trading API with built-in Technical Indicators",
     long_description=long_description,

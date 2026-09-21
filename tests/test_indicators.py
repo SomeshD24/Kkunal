@@ -133,8 +133,9 @@ class TestIndicators(unittest.TestCase):
     # --- Volatility ---
     def test_bollinger_bands(self):
         result = bollinger_bands(self.df, period=20, std_dev=2.0)
-        self.assertTrue((result["BB_Upper"] >= result["BB_Middle"] - 1e-10).all())
-        self.assertTrue((result["BB_Middle"] >= result["BB_Lower"] - 1e-10).all())
+        valid = result.dropna()
+        self.assertTrue((valid["BB_Upper"] >= valid["BB_Middle"] - 1e-10).all())
+        self.assertTrue((valid["BB_Middle"] >= valid["BB_Lower"] - 1e-10).all())
         self.assertIn("BB_PercentB", result.columns)
 
     def test_atr(self):
@@ -147,7 +148,8 @@ class TestIndicators(unittest.TestCase):
         self.assertIn("Donchian_Upper", result.columns)
         self.assertIn("Donchian_Middle", result.columns)
         self.assertIn("Donchian_Lower", result.columns)
-        self.assertTrue((result["Donchian_Upper"] >= result["Donchian_Lower"]).all())
+        valid = result.dropna()
+        self.assertTrue((valid["Donchian_Upper"] >= valid["Donchian_Lower"]).all())
 
     # --- Trend ---
     def test_supertrend(self):
@@ -231,6 +233,58 @@ class TestIndicators(unittest.TestCase):
         with self.assertRaises(ValueError):
             pivot_points(self.df, method="invalid")
 
+    # --- Warmup contract (1.4.0) ---
+    def test_warmup_is_nan_until_window_full(self):
+        """Every windowed indicator must withhold partial-window values."""
+        cases = [
+            (sma(self.df, 20), 19),
+            (wma(self.df, 20), 19),
+            (rsi(self.df, 14), 14),
+            (atr(self.df, 14), 13),   # true range is defined on bar 0, unlike RSI's delta
+            (cci(self.df, 20), 19),
+            (williams_r(self.df, 14), 13),
+        ]
+        for series, warmup in cases:
+            with self.subTest(indicator=series.name):
+                self.assertTrue(series.iloc[:warmup].isna().all(),
+                                f"{series.name} leaked a partial-window value")
+                self.assertFalse(pd.isna(series.iloc[warmup]),
+                                 f"{series.name} is NaN past its warmup")
+
+    def test_bollinger_and_donchian_warmup(self):
+        self.assertTrue(bollinger_bands(self.df, 20)["BB_Upper"].iloc[:19].isna().all())
+        self.assertTrue(donchian_channel(self.df, 20)["Donchian_Upper"].iloc[:19].isna().all())
+
+    # --- add_all / add() coverage (1.4.0) ---
+    def test_add_all_covers_every_indicator(self):
+        result = self.ind_api.add_all(self.df)
+        added = set(result.columns) - set(self.df.columns)
+        for marker in ("ADX", "Stoch_K", "CCI_20", "Williams_R_14", "PSAR",
+                       "Tenkan_Sen", "Donchian_Upper", "HA_Close", "Pivot",
+                       "DEMA_20", "TEMA_20", "WMA_20"):
+            self.assertIn(marker, added, f"add_all() omitted {marker}")
+
+    def test_add_all_core_only(self):
+        result = self.ind_api.add_all(self.df, core_only=True)
+        added = set(result.columns) - set(self.df.columns)
+        self.assertIn("RSI_14", added)
+        self.assertNotIn("ADX", added)
+
+    def test_add_by_name_and_alias(self):
+        result = self.ind_api.add(self.df, "rsi", "bb", "st")
+        added = set(result.columns) - set(self.df.columns)
+        self.assertIn("RSI_14", added)
+        self.assertIn("BB_Upper", added)
+        self.assertIn("Supertrend", added)
+
+    def test_add_unknown_name_raises(self):
+        with self.assertRaises(ValueError):
+            self.ind_api.add(self.df, "not_an_indicator")
+
+    def test_add_forwards_kwargs(self):
+        result = self.ind_api.add(self.df, "rsi", period=21)
+        self.assertIn("RSI_21", result.columns)
+
     # --- Regressions fixed in 1.2.1 ---
     def test_rsi_warmup_is_fully_masked(self):
         """Bar period-1 used to leak a fabricated 100.0 instead of NaN."""
@@ -240,8 +294,8 @@ class TestIndicators(unittest.TestCase):
 
     def test_bollinger_uses_population_std(self):
         result = bollinger_bands(self.df, period=20, std_dev=2.0)
-        expected = (self.df["Close"].rolling(20, min_periods=1).mean()
-                    + 2.0 * self.df["Close"].rolling(20, min_periods=1).std(ddof=0).fillna(0))
+        expected = (self.df["Close"].rolling(20).mean()
+                    + 2.0 * self.df["Close"].rolling(20).std(ddof=0))
         self.assertAlmostEqual(result["BB_Upper"].iloc[30], expected.iloc[30], places=9)
 
     def test_empty_dataframe_does_not_crash(self):

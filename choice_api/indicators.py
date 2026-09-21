@@ -10,6 +10,10 @@ Indicators:
     Volatility:  Bollinger Bands, ATR, Donchian Channel
     Volume:      VWAP, OBV
     Utilities:   Crossover, Crossunder, Heikin Ashi, Pivot Points
+
+Every indicator returns NaN until its lookback window is full, so a value is
+only ever produced from a complete window. Align or drop those leading rows
+(e.g. `df.dropna()`) before feeding results into a strategy.
 """
 
 from typing import Optional, Union, Dict, Any, List
@@ -96,7 +100,7 @@ def sma(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    return s.rolling(window=period, min_periods=1).mean().rename(f"SMA_{period}")
+    return s.rolling(window=period, min_periods=period).mean().rename(f"SMA_{period}")
 
 
 def ema(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
@@ -418,19 +422,19 @@ def ichimoku(
     close = _get_col(df, "Close")
 
     # Tenkan-sen (Conversion Line)
-    tenkan = (high.rolling(window=tenkan_period, min_periods=1).max()
-              + low.rolling(window=tenkan_period, min_periods=1).min()) / 2.0
+    tenkan = (high.rolling(window=tenkan_period, min_periods=tenkan_period).max()
+              + low.rolling(window=tenkan_period, min_periods=tenkan_period).min()) / 2.0
 
     # Kijun-sen (Base Line)
-    kijun = (high.rolling(window=kijun_period, min_periods=1).max()
-             + low.rolling(window=kijun_period, min_periods=1).min()) / 2.0
+    kijun = (high.rolling(window=kijun_period, min_periods=kijun_period).max()
+             + low.rolling(window=kijun_period, min_periods=kijun_period).min()) / 2.0
 
     # Senkou Span A (Leading Span A) — displaced forward
     senkou_a = ((tenkan + kijun) / 2.0).shift(displacement)
 
     # Senkou Span B (Leading Span B) — displaced forward
-    senkou_b = ((high.rolling(window=senkou_b_period, min_periods=1).max()
-                 + low.rolling(window=senkou_b_period, min_periods=1).min()) / 2.0).shift(displacement)
+    senkou_b = ((high.rolling(window=senkou_b_period, min_periods=senkou_b_period).max()
+                 + low.rolling(window=senkou_b_period, min_periods=senkou_b_period).min()) / 2.0).shift(displacement)
 
     # Chikou Span (Lagging Span) — displaced backward
     chikou = close.shift(-displacement)
@@ -494,14 +498,14 @@ def stochastic(
     low = _get_col(df, "Low")
     close = _get_col(df, "Close")
 
-    lowest_low = low.rolling(window=k_period, min_periods=1).min()
-    highest_high = high.rolling(window=k_period, min_periods=1).max()
+    lowest_low = low.rolling(window=k_period, min_periods=k_period).min()
+    highest_high = high.rolling(window=k_period, min_periods=k_period).max()
 
     denom = (highest_high - lowest_low).replace(0, np.nan)
     raw_k = 100 * (close - lowest_low) / denom
 
-    stoch_k = raw_k.rolling(window=smooth_k, min_periods=1).mean()
-    stoch_d = stoch_k.rolling(window=d_period, min_periods=1).mean()
+    stoch_k = raw_k.rolling(window=smooth_k, min_periods=smooth_k).mean()
+    stoch_d = stoch_k.rolling(window=d_period, min_periods=d_period).mean()
 
     return pd.DataFrame({
         "Stoch_K": stoch_k,
@@ -520,7 +524,7 @@ def cci(df: pd.DataFrame, period: int = 20) -> pd.Series:
     close = _get_col(df, "Close")
 
     tp = (high + low + close) / 3.0
-    sma_tp = tp.rolling(window=period, min_periods=1).mean()
+    sma_tp = tp.rolling(window=period, min_periods=period).mean()
 
     def _mean_dev(window):
         return np.abs(window - window.mean()).mean()
@@ -541,8 +545,8 @@ def williams_r(df: pd.DataFrame, period: int = 14) -> pd.Series:
     low = _get_col(df, "Low")
     close = _get_col(df, "Close")
 
-    highest_high = high.rolling(window=period, min_periods=1).max()
-    lowest_low = low.rolling(window=period, min_periods=1).min()
+    highest_high = high.rolling(window=period, min_periods=period).max()
+    lowest_low = low.rolling(window=period, min_periods=period).min()
 
     denom = (highest_high - lowest_low).replace(0, np.nan)
     wr = -100 * (highest_high - close) / denom
@@ -568,8 +572,8 @@ def bollinger_bands(
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    middle = s.rolling(window=period, min_periods=1).mean()
-    std = s.rolling(window=period, min_periods=1).std(ddof=0).fillna(0)
+    middle = s.rolling(window=period, min_periods=period).mean()
+    std = s.rolling(window=period, min_periods=period).std(ddof=0)
 
     upper = middle + (std * std_dev)
     lower = middle - (std * std_dev)
@@ -616,8 +620,8 @@ def donchian_channel(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     high = _get_col(df, "High")
     low = _get_col(df, "Low")
 
-    upper = high.rolling(window=period, min_periods=1).max()
-    lower = low.rolling(window=period, min_periods=1).min()
+    upper = high.rolling(window=period, min_periods=period).max()
+    lower = low.rolling(window=period, min_periods=period).min()
     middle = (upper + lower) / 2.0
 
     return pd.DataFrame({
@@ -769,6 +773,37 @@ def pivot_points(
 
 
 # ============================================================
+# Indicator Name Resolution
+# ============================================================
+
+#: Maps user-facing names and shorthands onto IndicatorsAPI.add_* methods.
+INDICATOR_ALIASES: Dict[str, str] = {
+    "sma": "sma", "ema": "ema", "dema": "dema", "tema": "tema", "wma": "wma",
+    "rsi": "rsi", "macd": "macd", "adx": "adx",
+    "bb": "bollinger_bands", "bollinger": "bollinger_bands",
+    "bollinger_bands": "bollinger_bands",
+    "atr": "atr",
+    "st": "supertrend", "supertrend": "supertrend",
+    "stoch": "stochastic", "stochastic": "stochastic",
+    "cci": "cci",
+    "wr": "williams_r", "williams": "williams_r", "williams_r": "williams_r",
+    "vwap": "vwap", "obv": "obv",
+    "psar": "parabolic_sar", "parabolic": "parabolic_sar",
+    "parabolic_sar": "parabolic_sar",
+    "ichi": "ichimoku", "ichimoku": "ichimoku",
+    "dc": "donchian_channel", "donchian": "donchian_channel",
+    "donchian_channel": "donchian_channel",
+    "ha": "heikin_ashi", "heikinashi": "heikin_ashi", "heikin_ashi": "heikin_ashi",
+    "pp": "pivot_points", "pivot": "pivot_points", "pivot_points": "pivot_points",
+}
+
+
+def resolve_indicator(name: str) -> Optional[str]:
+    """Resolves an indicator name or shorthand to its add_* method suffix."""
+    return INDICATOR_ALIASES.get(str(name).strip().lower())
+
+
+# ============================================================
 # IndicatorsAPI Class
 # ============================================================
 
@@ -917,6 +952,14 @@ class IndicatorsAPI:
             df[col] = pp_df[col]
         return df
 
+    # Indicators applied by add_all(), in output order.
+    CORE_INDICATORS = ("sma", "ema", "rsi", "macd", "bollinger_bands",
+                       "atr", "supertrend", "vwap", "obv")
+    EXTRA_INDICATORS = ("dema", "tema", "wma", "adx", "stochastic", "cci",
+                        "williams_r", "parabolic_sar", "ichimoku",
+                        "donchian_channel", "heikin_ashi", "pivot_points")
+    ALL_INDICATORS = CORE_INDICATORS + EXTRA_INDICATORS
+
     def add_all(
         self,
         df: pd.DataFrame,
@@ -927,11 +970,20 @@ class IndicatorsAPI:
         supertrend_period: int = 10,
         supertrend_multiplier: float = 3.0,
         bb_period: int = 20,
-        bb_std_dev: float = 2.0
+        bb_std_dev: float = 2.0,
+        core_only: bool = False
     ) -> pd.DataFrame:
         """
-        Adds all standard technical indicators to the DataFrame at once.
-        All periods are customizable via keyword arguments.
+        Adds every technical indicator in this module to the DataFrame at once.
+
+        Args:
+            core_only: Restricts the output to the nine most commonly used
+                indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, Supertrend,
+                VWAP, OBV) instead of all 21.
+
+        Periods for the core indicators are customisable via keyword arguments;
+        the remainder use their documented defaults. Use the individual add_*
+        methods when you need to tune those.
         """
         df = self.add_sma(df, period=sma_period)
         df = self.add_ema(df, period=ema_period)
@@ -942,4 +994,33 @@ class IndicatorsAPI:
         df = self.add_supertrend(df, period=supertrend_period, multiplier=supertrend_multiplier)
         df = self.add_vwap(df)
         df = self.add_obv(df)
+
+        if core_only:
+            return df
+
+        for name in self.EXTRA_INDICATORS:
+            df = getattr(self, f"add_{name}")(df)
+        return df
+
+    def add(self, df: pd.DataFrame, *names: str, **kwargs) -> pd.DataFrame:
+        """
+        Applies indicators by name, so they can be chosen at runtime.
+
+        Aliases match those accepted by
+        HistoricalAPI.get_historical_data_with_indicators, e.g. 'bb', 'st', 'psar'.
+
+        Example:
+            >>> df = client.indicators.add(df, "rsi", "macd", "supertrend")
+            >>> df = client.indicators.add(df, "rsi", period=21)
+        """
+        for name in names:
+            method = resolve_indicator(name)
+            if method is None:
+                raise ValueError(
+                    f"Unknown indicator {name!r}. Available: {', '.join(sorted(INDICATOR_ALIASES))}"
+                )
+            fn = getattr(self, f"add_{method}")
+            accepted = {k: v for k, v in kwargs.items()
+                        if k in fn.__code__.co_varnames[:fn.__code__.co_argcount]}
+            df = fn(df, **accepted)
         return df
