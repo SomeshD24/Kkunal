@@ -6,17 +6,24 @@ using pandas and numpy. No external C-dependencies required.
 
 Indicators:
     Trend:       SMA, EMA, WMA, DEMA, TEMA, MACD, ADX, Supertrend, Parabolic SAR, Ichimoku Cloud
-    Momentum:    RSI, Stochastic Oscillator, CCI, Williams %R
-    Volatility:  Bollinger Bands, ATR, Donchian Channel
+    Momentum:    RSI, Stochastic Oscillator, CCI, Williams %R, MFI, ROC
+    Volatility:  Bollinger Bands, ATR, Donchian Channel, Keltner Channel
     Volume:      VWAP, OBV
-    Utilities:   Crossover, Crossunder, Heikin Ashi, Pivot Points
+    Levels:      Pivot Points, Central Pivot Range (CPR)
+    Utilities:   Crossover, Crossunder, Heikin Ashi
 
-Every indicator returns NaN until its lookback window is full, so a value is
-only ever produced from a complete window. Align or drop those leading rows
-(e.g. `df.dropna()`) before feeding results into a strategy.
+Conventions (chosen so values match TA-Lib and TradingView bar for bar):
+  * A windowed indicator returns NaN until its lookback window is full, so a
+    value is only ever produced from a complete window. Drop those leading rows
+    (e.g. `df.dropna()`) before feeding results into a strategy.
+  * EMA-based indicators (EMA, DEMA, TEMA, MACD, Keltner) and Wilder-smoothed
+    ones (RSI, ATR, ADX, Supertrend) seed the recursion with the simple average
+    of the first window rather than with the first value.
+  * Input must be in chronological order, oldest first.
 """
 
-from typing import Optional, Union, Dict, Any, List
+import inspect
+from typing import Optional, Dict
 import numpy as np
 import pandas as pd
 
@@ -48,6 +55,102 @@ def _get_col(df: pd.DataFrame, col_name: str) -> pd.Series:
 
 
 # ============================================================
+# Smoothing Helpers
+# ============================================================
+
+def _seeded_ewm(series: pd.Series, period: int, alpha: float) -> pd.Series:
+    """
+    Recursive (exponential) smoothing seeded with the simple average of the first
+    `period` observations - the convention TA-Lib and TradingView use.
+
+    Seeding with the first value instead, as a bare `ewm(adjust=False)` does,
+    converges to the same numbers eventually but is badly off early on: RSI_14
+    differs by a median of 4 points at bar 30 and is still 1 point out at bar 50.
+    """
+    values = series.to_numpy(dtype=float, copy=True)
+    valid = np.flatnonzero(~np.isnan(values))
+    if len(valid) < period:
+        return pd.Series(np.nan, index=series.index, dtype=float)
+    seed_pos = valid[period - 1]
+    seed = values[valid[:period]].mean()
+    values[:seed_pos] = np.nan
+    values[seed_pos] = seed
+    return pd.Series(values, index=series.index).ewm(alpha=alpha, adjust=False).mean()
+
+
+def _ema_series(series: pd.Series, period: int) -> pd.Series:
+    """Exponential moving average, SMA-seeded. First value at index period-1."""
+    return _seeded_ewm(series, period, alpha=2.0 / (period + 1))
+
+
+def _rma_series(series: pd.Series, period: int) -> pd.Series:
+    """Wilder's smoothing (TradingView's ta.rma), SMA-seeded."""
+    return _seeded_ewm(series, period, alpha=1.0 / period)
+
+
+def _time_series(df: pd.DataFrame) -> Optional[pd.Series]:
+    """The bar timestamps: a datetime 'Time' column (any case), else a DatetimeIndex, else None."""
+    for c in df.columns:
+        if str(c).lower() == "time" and pd.api.types.is_datetime64_any_dtype(df[c]):
+            return df[c]
+    if isinstance(df.index, pd.DatetimeIndex):
+        return pd.Series(df.index, index=df.index)
+    return None
+
+
+def _previous_period_hlc(df: pd.DataFrame, anchor: str):
+    """
+    High/Low/Close of the PREVIOUS period for every bar, which is what floor-trader
+    levels are built from.
+
+    On intraday data the period is the trading day: every bar of a session gets the
+    prior session's H/L/C, as charting platforms draw daily pivots on intraday charts.
+    On daily (or slower) data it is simply the previous bar.
+    """
+    high = _get_col(df, "High")
+    low = _get_col(df, "Low")
+    close = _get_col(df, "Close")
+
+    anchor = str(anchor)
+    if anchor.lower() not in ("auto", "bar") and anchor.upper() not in ("D", "W", "M"):
+        raise ValueError(f"anchor must be 'auto', 'bar', 'D', 'W' or 'M', got {anchor!r}")
+
+    times = _time_series(df)
+    if anchor.lower() == "auto":
+        intraday = times is not None and bool(times.dt.normalize().duplicated().any())
+        anchor = "D" if intraday else "bar"
+
+    if anchor.lower() == "bar":
+        return high.shift(1), low.shift(1), close.shift(1)
+
+    if times is None:
+        raise ValueError(f"anchor={anchor!r} needs a datetime 'Time' column or a DatetimeIndex")
+
+    periods = times.dt.to_period(anchor.upper()).to_numpy()
+    frame = pd.DataFrame({"h": high.to_numpy(), "l": low.to_numpy(), "c": close.to_numpy()})
+    per_period = frame.groupby(periods).agg(h=("h", "max"), l=("l", "min"), c=("c", "last"))
+    previous = per_period.shift(1).reindex(periods)
+    return (pd.Series(previous["h"].to_numpy(), index=df.index),
+            pd.Series(previous["l"].to_numpy(), index=df.index),
+            pd.Series(previous["c"].to_numpy(), index=df.index))
+
+
+def _rolling_mean_abs_dev(values: np.ndarray, period: int) -> np.ndarray:
+    """Rolling mean absolute deviation, vectorised in blocks to bound memory."""
+    out = np.full(len(values), np.nan)
+    if len(values) < period:
+        return out
+    windows = np.lib.stride_tricks.sliding_window_view(values, period)
+    step = max(1, 2_000_000 // period)
+    for start in range(0, len(windows), step):
+        block = windows[start:start + step]
+        out[period - 1 + start: period - 1 + start + len(block)] = (
+            np.abs(block - block.mean(axis=1, keepdims=True)).mean(axis=1)
+        )
+    return out
+
+
+# ============================================================
 # Signal Utilities
 # ============================================================
 
@@ -61,8 +164,12 @@ def crossover(series_a: pd.Series, series_b: pd.Series) -> pd.Series:
     Example:
         >>> buy_signals = crossover(df['EMA_9'], df['EMA_21'])
     """
-    a = series_a.values
-    b = series_b.values if isinstance(series_b, pd.Series) else np.full(len(a), series_b)
+    a = series_a.to_numpy()
+    b = series_b.to_numpy() if isinstance(series_b, pd.Series) else np.full(len(a), series_b)
+    if len(a) != len(b):
+        raise ValueError(f"crossover() needs two series of equal length, got {len(a)} and {len(b)}")
+    if len(a) == 0:
+        return pd.Series([], index=series_a.index, dtype=bool, name="Crossover")
     prev_a = np.roll(a, 1)
     prev_b = np.roll(b, 1)
     cross = (a > b) & (prev_a <= prev_b)
@@ -80,8 +187,12 @@ def crossunder(series_a: pd.Series, series_b: pd.Series) -> pd.Series:
     Example:
         >>> sell_signals = crossunder(df['EMA_9'], df['EMA_21'])
     """
-    a = series_a.values
-    b = series_b.values if isinstance(series_b, pd.Series) else np.full(len(a), series_b)
+    a = series_a.to_numpy()
+    b = series_b.to_numpy() if isinstance(series_b, pd.Series) else np.full(len(a), series_b)
+    if len(a) != len(b):
+        raise ValueError(f"crossunder() needs two series of equal length, got {len(a)} and {len(b)}")
+    if len(a) == 0:
+        return pd.Series([], index=series_a.index, dtype=bool, name="Crossunder")
     prev_a = np.roll(a, 1)
     prev_b = np.roll(b, 1)
     cross = (a < b) & (prev_a >= prev_b)
@@ -105,12 +216,12 @@ def sma(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
 
 def ema(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
     """
-    Exponential Moving Average (EMA).
+    Exponential Moving Average (EMA), seeded with the SMA of the first window.
     """
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    return s.ewm(span=period, adjust=False).mean().rename(f"EMA_{period}")
+    return _ema_series(s, period).rename(f"EMA_{period}")
 
 
 def dema(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
@@ -121,8 +232,8 @@ def dema(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    ema1 = s.ewm(span=period, adjust=False).mean()
-    ema2 = ema1.ewm(span=period, adjust=False).mean()
+    ema1 = _ema_series(s, period)
+    ema2 = _ema_series(ema1, period)
     return (2 * ema1 - ema2).rename(f"DEMA_{period}")
 
 
@@ -134,9 +245,9 @@ def tema(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    ema1 = s.ewm(span=period, adjust=False).mean()
-    ema2 = ema1.ewm(span=period, adjust=False).mean()
-    ema3 = ema2.ewm(span=period, adjust=False).mean()
+    ema1 = _ema_series(s, period)
+    ema2 = _ema_series(ema1, period)
+    ema3 = _ema_series(ema2, period)
     return (3 * ema1 - 3 * ema2 + ema3).rename(f"TEMA_{period}")
 
 
@@ -147,13 +258,14 @@ def wma(df: pd.DataFrame, period: int = 20, column: str = "Close") -> pd.Series:
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
-    weights = np.arange(1, period + 1)
+    values = s.to_numpy(dtype=float)
+    weights = np.arange(1, period + 1, dtype=float)
 
-    def _calc_wma(window):
-        return np.dot(window, weights) / weights.sum()
-
-    res = s.rolling(window=period, min_periods=period).apply(_calc_wma, raw=True)
-    return res.rename(f"WMA_{period}")
+    out = np.full(len(values), np.nan)
+    if len(values) >= period:
+        windows = np.lib.stride_tricks.sliding_window_view(values, period)
+        out[period - 1:] = windows @ weights / weights.sum()
+    return pd.Series(out, index=s.index, name=f"WMA_{period}")
 
 
 def macd(
@@ -171,12 +283,14 @@ def macd(
     _validate_period(fast_period, "fast_period")
     _validate_period(slow_period, "slow_period")
     _validate_period(signal_period, "signal_period")
+    if fast_period >= slow_period:
+        raise ValueError(f"fast_period ({fast_period}) must be smaller than slow_period ({slow_period})")
     s = _get_col(df, column)
-    fast_ema = s.ewm(span=fast_period, adjust=False).mean()
-    slow_ema = s.ewm(span=slow_period, adjust=False).mean()
+    fast_ema = _ema_series(s, fast_period)
+    slow_ema = _ema_series(s, slow_period)
 
     macd_line = fast_ema - slow_ema
-    signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
+    signal_line = _ema_series(macd_line, signal_period)
     histogram = macd_line - signal_line
 
     return pd.DataFrame({
@@ -200,8 +314,8 @@ def adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     up_move = high.diff()
     down_move = -1 * low.diff()
 
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
 
     prev_close = close.shift(1)
     tr1 = high - low
@@ -209,15 +323,22 @@ def adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     tr3 = (low - prev_close).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    tr_smooth = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    plus_dm_smooth = pd.Series(plus_dm, index=df.index).ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    minus_dm_smooth = pd.Series(minus_dm, index=df.index).ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    # The first bar has no predecessor, so its movement and true range are undefined.
+    plus_dm.iloc[:1] = np.nan
+    minus_dm.iloc[:1] = np.nan
+    tr.iloc[:1] = np.nan
+
+    tr_smooth = _rma_series(tr, period)
+    plus_dm_smooth = _rma_series(plus_dm, period)
+    minus_dm_smooth = _rma_series(minus_dm, period)
 
     plus_di = 100 * (plus_dm_smooth / tr_smooth.replace(0, np.nan))
     minus_di = 100 * (minus_dm_smooth / tr_smooth.replace(0, np.nan))
 
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    adx_series = dx.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    di_sum = plus_di + minus_di
+    dx = 100 * (plus_di - minus_di).abs() / di_sum.replace(0, np.nan)
+    dx = dx.where(di_sum != 0, 0.0)            # no directional movement at all
+    adx_series = _rma_series(dx, period)
 
     return pd.DataFrame({
         "ADX": adx_series,
@@ -322,78 +443,67 @@ def parabolic_sar(
     af_max: float = 0.20
 ) -> pd.DataFrame:
     """
-    Parabolic SAR (Stop and Reverse).
-    Returns DataFrame with columns: PSAR, PSAR_Trend (+1 = Bullish, -1 = Bearish)
+    Parabolic SAR (Stop and Reverse), following Wilder's rules as TA-Lib implements them.
+
+    Returns DataFrame with columns: PSAR, PSAR_Trend (+1 = Bullish, -1 = Bearish,
+    0 on the first bar, where no SAR exists yet).
     """
     _validate_df(df)
-    high = _get_col(df, "High").values
-    low = _get_col(df, "Low").values
-    close = _get_col(df, "Close").values
+    high = _get_col(df, "High").to_numpy(dtype=float)
+    low = _get_col(df, "Low").to_numpy(dtype=float)
     n = len(df)
 
-    if n == 0:
-        return pd.DataFrame(
-            {"PSAR": np.zeros(0), "PSAR_Trend": np.zeros(0, dtype=int)},
-            index=df.index
-        )
+    psar = np.full(n, np.nan)
+    trend = np.zeros(n, dtype=int)
+    if n < 2:
+        return pd.DataFrame({"PSAR": psar, "PSAR_Trend": trend}, index=df.index)
 
-    psar = np.zeros(n)
-    trend = np.ones(n, dtype=int)
-    af = np.zeros(n)
-    ep = np.zeros(n)
+    # The opening direction comes from the first two bars' directional movement.
+    up_move = high[1] - high[0]
+    down_move = low[0] - low[1]
+    is_long = not (down_move > 0 and down_move > up_move)
 
-    # Initialize
-    psar[0] = low[0]
-    af[0] = af_start
-    ep[0] = high[0]
-    trend[0] = 1
+    if is_long:
+        ep, sar = high[1], low[0]
+    else:
+        ep, sar = low[1], high[0]
+    af = af_start
+    new_low, new_high = low[1], high[1]
 
     for i in range(1, n):
-        prev_psar = psar[i-1]
-        prev_af = af[i-1]
-        prev_ep = ep[i-1]
-        prev_trend = trend[i-1]
+        prev_low, prev_high = new_low, new_high
+        new_low, new_high = low[i], high[i]
 
-        if prev_trend == 1:  # Bullish
-            psar[i] = prev_psar + prev_af * (prev_ep - prev_psar)
-            # SAR cannot be above the prior two lows
-            psar[i] = min(psar[i], low[i-1])
-            if i >= 2:
-                psar[i] = min(psar[i], low[i-2])
-
-            if low[i] < psar[i]:  # Reversal to bearish
-                trend[i] = -1
-                psar[i] = prev_ep
-                ep[i] = low[i]
-                af[i] = af_start
+        if is_long:
+            if new_low <= sar:
+                # Reverse to short. The SAR may never sit inside the last two bars.
+                is_long = False
+                sar = max(ep, prev_high, new_high)
+                psar[i] = sar
+                af, ep = af_start, new_low
+                sar = max(sar + af * (ep - sar), prev_high, new_high)
             else:
-                trend[i] = 1
-                if high[i] > prev_ep:
-                    ep[i] = high[i]
-                    af[i] = min(prev_af + af_step, af_max)
-                else:
-                    ep[i] = prev_ep
-                    af[i] = prev_af
-        else:  # Bearish
-            psar[i] = prev_psar + prev_af * (prev_ep - prev_psar)
-            # SAR cannot be below the prior two highs
-            psar[i] = max(psar[i], high[i-1])
-            if i >= 2:
-                psar[i] = max(psar[i], high[i-2])
-
-            if high[i] > psar[i]:  # Reversal to bullish
-                trend[i] = 1
-                psar[i] = prev_ep
-                ep[i] = high[i]
-                af[i] = af_start
+                psar[i] = sar
+                if new_high > ep:
+                    ep = new_high
+                    af = min(af + af_step, af_max)
+                sar = min(sar + af * (ep - sar), prev_low, new_low)
+        else:
+            if new_high >= sar:
+                # Reverse to long.
+                is_long = True
+                sar = min(ep, prev_low, new_low)
+                psar[i] = sar
+                af, ep = af_start, new_high
+                sar = min(sar + af * (ep - sar), prev_low, new_low)
             else:
-                trend[i] = -1
-                if low[i] < prev_ep:
-                    ep[i] = low[i]
-                    af[i] = min(prev_af + af_step, af_max)
-                else:
-                    ep[i] = prev_ep
-                    af[i] = prev_af
+                psar[i] = sar
+                if new_low < ep:
+                    ep = new_low
+                    af = min(af + af_step, af_max)
+                sar = max(sar + af * (ep - sar), prev_high, new_high)
+
+        trend[i] = 1 if is_long else -1
 
     return pd.DataFrame({
         "PSAR": psar,
@@ -454,7 +564,8 @@ def ichimoku(
 
 def rsi(df: pd.DataFrame, period: int = 14, column: str = "Close") -> pd.Series:
     """
-    Relative Strength Index (RSI) using Wilder's Exponential Smoothing.
+    Relative Strength Index (RSI) using Wilder's smoothing, seeded with the simple
+    average of the first `period` gains/losses as Wilder defined it.
     """
     _validate_df(df)
     _validate_period(period)
@@ -464,9 +575,8 @@ def rsi(df: pd.DataFrame, period: int = 14, column: str = "Close") -> pd.Series:
     gain = delta.clip(lower=0)
     loss = -1 * delta.clip(upper=0)
 
-    # Wilder's smoothing (alpha = 1 / period)
-    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_gain = _rma_series(gain, period)
+    avg_loss = _rma_series(loss, period)
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi_series = 100 - (100 / (1 + rs))
@@ -525,11 +635,8 @@ def cci(df: pd.DataFrame, period: int = 20) -> pd.Series:
 
     tp = (high + low + close) / 3.0
     sma_tp = tp.rolling(window=period, min_periods=period).mean()
+    mad = pd.Series(_rolling_mean_abs_dev(tp.to_numpy(dtype=float), period), index=tp.index)
 
-    def _mean_dev(window):
-        return np.abs(window - window.mean()).mean()
-
-    mad = tp.rolling(window=period, min_periods=period).apply(_mean_dev, raw=True)
     cci_series = (tp - sma_tp) / (0.015 * mad.replace(0, np.nan))
     return cci_series.rename(f"CCI_{period}")
 
@@ -551,6 +658,48 @@ def williams_r(df: pd.DataFrame, period: int = 14) -> pd.Series:
     denom = (highest_high - lowest_low).replace(0, np.nan)
     wr = -100 * (highest_high - close) / denom
     return wr.rename(f"Williams_R_{period}")
+
+
+def mfi(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """
+    Money Flow Index (MFI) - a volume-weighted RSI, oscillating between 0 and 100.
+    """
+    _validate_df(df)
+    _validate_period(period)
+    high = _get_col(df, "High")
+    low = _get_col(df, "Low")
+    close = _get_col(df, "Close")
+    volume = _get_col(df, "Volume")
+
+    tp = (high + low + close) / 3.0
+    flow = tp * volume
+    change = tp.diff()
+
+    positive = flow.where(change > 0, 0.0)
+    negative = flow.where(change < 0, 0.0)
+    positive.iloc[:1] = np.nan                  # the first bar has nothing to compare with
+    negative.iloc[:1] = np.nan
+
+    pos_sum = positive.rolling(window=period, min_periods=period).sum()
+    neg_sum = negative.rolling(window=period, min_periods=period).sum()
+
+    ratio = pos_sum / neg_sum.replace(0, np.nan)
+    mfi_series = 100 - (100 / (1 + ratio))
+    mfi_series = mfi_series.where(neg_sum != 0, 100.0)
+    mfi_series = mfi_series.where(~((pos_sum == 0) & (neg_sum == 0)), 50.0)
+    mfi_series = mfi_series.where(pos_sum.notna())
+    return mfi_series.rename(f"MFI_{period}")
+
+
+def roc(df: pd.DataFrame, period: int = 12, column: str = "Close") -> pd.Series:
+    """
+    Rate of Change (ROC): the percentage move over the last `period` bars.
+    """
+    _validate_df(df)
+    _validate_period(period)
+    s = _get_col(df, column)
+    base = s.shift(period).replace(0, np.nan)
+    return ((s / base - 1.0) * 100.0).rename(f"ROC_{period}")
 
 
 # ============================================================
@@ -592,7 +741,8 @@ def bollinger_bands(
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """
-    Average True Range (ATR) using Wilder's Smoothing.
+    Average True Range (ATR) using Wilder's smoothing, seeded with the simple
+    average of the first `period` true ranges.
     """
     _validate_df(df)
     _validate_period(period)
@@ -605,9 +755,9 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     tr2 = (high - prev_close).abs()
     tr3 = (low - prev_close).abs()
 
+    # On the first bar there is no previous close, so the true range is High - Low.
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr_series = tr.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    return atr_series.rename(f"ATR_{period}")
+    return _rma_series(tr, period).rename(f"ATR_{period}")
 
 
 def donchian_channel(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
@@ -628,6 +778,31 @@ def donchian_channel(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
         "Donchian_Upper": upper,
         "Donchian_Middle": middle,
         "Donchian_Lower": lower
+    }, index=df.index)
+
+
+def keltner_channel(
+    df: pd.DataFrame,
+    period: int = 20,
+    multiplier: float = 2.0,
+    atr_period: int = 10
+) -> pd.DataFrame:
+    """
+    Keltner Channel: an EMA midline with bands `multiplier` ATRs either side.
+    Returns DataFrame with columns: KC_Upper, KC_Middle, KC_Lower
+    """
+    _validate_df(df)
+    _validate_period(period)
+    _validate_period(atr_period, "atr_period")
+    close = _get_col(df, "Close")
+
+    middle = _ema_series(close, period)
+    band = multiplier * atr(df, period=atr_period)
+
+    return pd.DataFrame({
+        "KC_Upper": middle + band,
+        "KC_Middle": middle,
+        "KC_Lower": middle - band
     }, index=df.index)
 
 
@@ -686,10 +861,10 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     Returns DataFrame with columns: HA_Open, HA_High, HA_Low, HA_Close
     """
     _validate_df(df)
-    opn = _get_col(df, "Open").values.copy()
-    high = _get_col(df, "High").values.copy()
-    low = _get_col(df, "Low").values.copy()
-    close = _get_col(df, "Close").values.copy()
+    opn = _get_col(df, "Open").to_numpy(dtype=float)
+    high = _get_col(df, "High").to_numpy(dtype=float)
+    low = _get_col(df, "Low").to_numpy(dtype=float)
+    close = _get_col(df, "Close").to_numpy(dtype=float)
 
     if len(df) == 0:
         return pd.DataFrame(
@@ -717,25 +892,31 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
 
 def pivot_points(
     df: pd.DataFrame,
-    method: str = "standard"
+    method: str = "standard",
+    anchor: str = "auto"
 ) -> pd.DataFrame:
     """
     Pivot Points calculator.
 
-    Levels are derived from the PREVIOUS bar's High/Low/Close, so the values on
-    any given bar are known before that bar opens. The first bar is therefore NaN.
+    Levels are derived from the PREVIOUS period's High/Low/Close, so the values on
+    any given bar are known before that bar opens.
 
     Args:
         df: DataFrame with High, Low, Close columns.
         method: 'standard', 'fibonacci', or 'camarilla'.
+        anchor: Which previous period to use.
+            'auto' (default) - on intraday data (several bars per day, detected from
+            the 'Time' column) the previous trading DAY, so every bar of a session
+            carries that day's levels, as charting platforms draw them; on daily or
+            slower data, the previous bar.
+            'bar' - always the previous bar. 'D' / 'W' / 'M' - the previous day,
+            week or month (needs a datetime 'Time' column or DatetimeIndex).
 
     Returns:
-        DataFrame with Pivot, R1-R3, S1-S3 columns.
+        DataFrame with Pivot, R1-R3, S1-S3 columns. Rows of the first period are NaN.
     """
     _validate_df(df)
-    high = _get_col(df, "High").shift(1)
-    low = _get_col(df, "Low").shift(1)
-    close = _get_col(df, "Close").shift(1)
+    high, low, close = _previous_period_hlc(df, anchor)
 
     pivot = (high + low + close) / 3.0
 
@@ -772,6 +953,42 @@ def pivot_points(
     }, index=df.index)
 
 
+def cpr(df: pd.DataFrame, anchor: str = "auto") -> pd.DataFrame:
+    """
+    Central Pivot Range (CPR), from the previous period's High/Low/Close.
+
+        Pivot = (H + L + C) / 3,  BC = (H + L) / 2,  TC = 2 * Pivot - BC
+
+    TC is always reported as the upper edge and BC as the lower one, whichever way
+    the raw formula falls, so `close > CPR_TC` reads naturally. A narrow range
+    (small CPR_Width, in percent of the pivot) often precedes a trending session.
+
+    Args:
+        anchor: Same as pivot_points() - 'auto' uses the previous trading day on
+            intraday data and the previous bar otherwise.
+
+    Returns:
+        DataFrame with CPR_Pivot, CPR_BC, CPR_TC, CPR_Width columns.
+    """
+    _validate_df(df)
+    high, low, close = _previous_period_hlc(df, anchor)
+
+    pivot = (high + low + close) / 3.0
+    mid = (high + low) / 2.0
+    other = 2 * pivot - mid
+
+    top = mid.where(mid >= other, other)
+    bottom = mid.where(mid <= other, other)
+    width = (top - bottom) / pivot.replace(0, np.nan) * 100.0
+
+    return pd.DataFrame({
+        "CPR_Pivot": pivot,
+        "CPR_BC": bottom,
+        "CPR_TC": top,
+        "CPR_Width": width
+    }, index=df.index)
+
+
 # ============================================================
 # Indicator Name Resolution
 # ============================================================
@@ -795,6 +1012,9 @@ INDICATOR_ALIASES: Dict[str, str] = {
     "donchian_channel": "donchian_channel",
     "ha": "heikin_ashi", "heikinashi": "heikin_ashi", "heikin_ashi": "heikin_ashi",
     "pp": "pivot_points", "pivot": "pivot_points", "pivot_points": "pivot_points",
+    "cpr": "cpr",
+    "mfi": "mfi", "roc": "roc",
+    "kc": "keltner_channel", "keltner": "keltner_channel", "keltner_channel": "keltner_channel",
 }
 
 
@@ -945,19 +1165,45 @@ class IndicatorsAPI:
             df[col] = ha_df[col]
         return df
 
-    def add_pivot_points(self, df: pd.DataFrame, method: str = "standard") -> pd.DataFrame:
+    def add_pivot_points(self, df: pd.DataFrame, method: str = "standard", anchor: str = "auto") -> pd.DataFrame:
         df = df.copy()
-        pp_df = pivot_points(df, method=method)
+        pp_df = pivot_points(df, method=method, anchor=anchor)
         for col in pp_df.columns:
             df[col] = pp_df[col]
+        return df
+
+    def add_cpr(self, df: pd.DataFrame, anchor: str = "auto") -> pd.DataFrame:
+        df = df.copy()
+        cpr_df = cpr(df, anchor=anchor)
+        for col in cpr_df.columns:
+            df[col] = cpr_df[col]
+        return df
+
+    def add_mfi(self, df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+        df = df.copy()
+        df[f"MFI_{period}"] = mfi(df, period=period)
+        return df
+
+    def add_roc(self, df: pd.DataFrame, period: int = 12, column: str = "Close") -> pd.DataFrame:
+        df = df.copy()
+        df[f"ROC_{period}"] = roc(df, period=period, column=column)
+        return df
+
+    def add_keltner_channel(self, df: pd.DataFrame, period: int = 20, multiplier: float = 2.0,
+                            atr_period: int = 10) -> pd.DataFrame:
+        df = df.copy()
+        kc_df = keltner_channel(df, period=period, multiplier=multiplier, atr_period=atr_period)
+        for col in kc_df.columns:
+            df[col] = kc_df[col]
         return df
 
     # Indicators applied by add_all(), in output order.
     CORE_INDICATORS = ("sma", "ema", "rsi", "macd", "bollinger_bands",
                        "atr", "supertrend", "vwap", "obv")
     EXTRA_INDICATORS = ("dema", "tema", "wma", "adx", "stochastic", "cci",
-                        "williams_r", "parabolic_sar", "ichimoku",
-                        "donchian_channel", "heikin_ashi", "pivot_points")
+                        "williams_r", "mfi", "roc", "parabolic_sar", "ichimoku",
+                        "donchian_channel", "keltner_channel", "heikin_ashi",
+                        "pivot_points", "cpr")
     ALL_INDICATORS = CORE_INDICATORS + EXTRA_INDICATORS
 
     def add_all(
@@ -979,7 +1225,7 @@ class IndicatorsAPI:
         Args:
             core_only: Restricts the output to the nine most commonly used
                 indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, Supertrend,
-                VWAP, OBV) instead of all 21.
+                VWAP, OBV) instead of all of them.
 
         Periods for the core indicators are customisable via keyword arguments;
         the remainder use their documented defaults. Use the individual add_*
@@ -1013,6 +1259,7 @@ class IndicatorsAPI:
             >>> df = client.indicators.add(df, "rsi", "macd", "supertrend")
             >>> df = client.indicators.add(df, "rsi", period=21)
         """
+        methods = []
         for name in names:
             method = resolve_indicator(name)
             if method is None:
@@ -1020,7 +1267,14 @@ class IndicatorsAPI:
                     f"Unknown indicator {name!r}. Available: {', '.join(sorted(INDICATOR_ALIASES))}"
                 )
             fn = getattr(self, f"add_{method}")
-            accepted = {k: v for k, v in kwargs.items()
-                        if k in fn.__code__.co_varnames[:fn.__code__.co_argcount]}
-            df = fn(df, **accepted)
+            methods.append((fn, set(inspect.signature(fn).parameters) - {"df"}))
+
+        # Each keyword goes to the indicators that accept it. One that none of
+        # them accepts is a typo, not something to drop silently.
+        unused = set(kwargs) - set().union(*(params for _, params in methods)) if methods else set(kwargs)
+        if unused:
+            raise TypeError(f"add() got keyword argument(s) no selected indicator accepts: {sorted(unused)}")
+
+        for fn, params in methods:
+            df = fn(df, **{k: v for k, v in kwargs.items() if k in params})
         return df

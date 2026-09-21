@@ -1,6 +1,11 @@
 import threading
 import time
+import logging
 from typing import Dict, Any, Optional, Union, List, Tuple
+
+from .exceptions import OrderValidationError
+
+logger = logging.getLogger(__name__)
 
 _ORDER_NO_LOCK = threading.Lock()
 _LAST_ORDER_NO = 0
@@ -20,6 +25,27 @@ def _next_client_order_no() -> int:
         return candidate
 
 
+def _validate_order(bs: int, qty: int, price: float, trigger_price: float, disclosed_qty: int = 0) -> None:
+    """Rejects an obviously malformed order locally, before it can reach the exchange."""
+    if int(bs) not in (1, 2):
+        raise OrderValidationError(f"bs must be 1 (Buy) or 2 (Sell), got {bs!r}")
+    if isinstance(qty, bool) or int(qty) != qty or qty <= 0:
+        raise OrderValidationError(f"qty must be a positive whole number, got {qty!r}")
+    if price is None or price < 0:
+        raise OrderValidationError(f"price must be zero or positive (in paisa), got {price!r}")
+    if trigger_price is None or trigger_price < 0:
+        raise OrderValidationError(f"trigger_price must be zero or positive (in paisa), got {trigger_price!r}")
+    if disclosed_qty < 0 or disclosed_qty > qty:
+        raise OrderValidationError(f"disclosed_qty must be between 0 and qty, got {disclosed_qty!r}")
+    # Prices travel in paisa, which are whole numbers. A fractional value is
+    # the classic sign that rupees were passed by mistake (1300.5 vs 130050).
+    if float(price) != int(price):
+        logger.warning(
+            "Order price %r is not a whole number. Prices are in PAISA, not rupees - "
+            "use to_paisa() if this was meant as rupees.", price
+        )
+
+
 class OrdersAPI:
     def __init__(self, client):
         self.client = client
@@ -35,6 +61,7 @@ class OrdersAPI:
             client_order_no: Your own reference number for this order, used later by
                 modify_order/cancel_order. Left as None, a unique one is generated.
         """
+        _validate_order(bs, qty, price, trigger_price, disclosed_qty)
         if client_order_no is None:
             client_order_no = _next_client_order_no()
 
@@ -56,7 +83,8 @@ class OrdersAPI:
             "DeviceId": "MAC",
             "ClientOrderNo": client_order_no
         }
-        return self.client.request("POST", "api/OpenAPI/V2/NewOrder", payload)
+        # Never retried: a request that timed out may still have reached the exchange.
+        return self.client.request("POST", "api/OpenAPI/V2/NewOrder", payload, retry=False, is_order=True)
 
     def modify_order(self, client_order_no: int, exchange_order_no: str, gateway_order_no: str,
                      segment_id: int, token: int, order_type: str, bs: int, qty: int, price: float,
@@ -77,7 +105,8 @@ class OrdersAPI:
             "Validity": validity,
             "ProductType": product_type
         }
-        return self.client.request("POST", "api/OpenAPI/ModifyOrder", payload)
+        _validate_order(bs, qty, price, trigger_price, disclosed_qty)
+        return self.client.request("POST", "api/OpenAPI/ModifyOrder", payload, retry=False, is_order=True)
 
     def cancel_order(self, client_order_no: int, exchange_order_no: str, gateway_order_no: str,
                      segment_id: int, token: int, order_type: str, bs: int, qty: int, price: float,
@@ -100,7 +129,7 @@ class OrdersAPI:
             "Validity": validity,
             "ProductType": product_type
         }
-        return self.client.request("POST", "api/OpenAPI/CancelOrder", payload)
+        return self.client.request("POST", "api/OpenAPI/CancelOrder", payload, retry=False, is_order=True)
 
     def get_order_book(self) -> Dict[str, Any]:
         """Retrieves the full order book."""
@@ -120,7 +149,7 @@ class OrdersAPI:
 
     def get_order_messages(self, req_id: str) -> Dict[str, Any]:
         """Retrieves order messages."""
-        return self.client.request("POST", "api/OpenAPI/OrderMessages", {"ReqId": req_id})
+        return self.client.request("POST", "api/OpenAPI/OrderMessages", {"ReqId": req_id}, retry=True)
 
     def get_margin(
         self,

@@ -6,8 +6,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  tests:
+    name: Test suite must pass first
+    uses: ./.github/workflows/tests.yml
+
   pypi-publish:
     name: Build and publish Python distribution to PyPI
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Mandatory for PyPI Trusted Publishing (OIDC)
@@ -25,10 +30,24 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install build
+          pip install build twine
+
+      - name: Check the release tag matches the package version
+        if: github.event_name == 'release'
+        run: |
+          version=$(python -c "import re; print(re.search(r'__version__ = \"(.+?)\"', open('choice_api/__init__.py').read()).group(1))")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "package version: $version | release tag: $tag"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag v$tag does not match choice_api.__version__ ($version)"
+            exit 1
+          fi
 
       - name: Build package
         run: python -m build
+
+      - name: Validate distribution metadata
+        run: twine check dist/*
 
       - name: Publish package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

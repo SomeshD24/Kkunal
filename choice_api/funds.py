@@ -69,7 +69,7 @@ class FundsAPI:
             "Mode": mode,
             "DeviceId": device_id
         }
-        return self.client.request("POST", "api/OpenAPI/GetMargin", payload)
+        return self.client.request("POST", "api/OpenAPI/GetMargin", payload, retry=True)
 
     calculate_margin = get_margin
 
@@ -109,7 +109,7 @@ class FundsAPI:
 
     def check_vpa(self, user_vpa: str) -> Dict[str, Any]:
         """Checks if a VPA is valid."""
-        return self.client.request("POST", "api/OpenAPI/CheckVPA", {"UserVPA": user_vpa})
+        return self.client.request("POST", "api/OpenAPI/CheckVPA", {"UserVPA": user_vpa}, retry=True)
 
     def payment_via_razorpay(self, amount: float, bank_acc_no: str, bank_ifsc_code: str, upi_id: str,
                              segment_id: int, payment_type: int = 0, product_type: int = 0) -> Dict[str, Any]:

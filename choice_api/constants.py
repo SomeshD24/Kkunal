@@ -19,19 +19,26 @@ API methods wherever a plain int or str is accepted:
 
 Prices and trigger prices are in **paisa**, not rupees: 1300.00 INR is 130000.
 Use `to_paisa()` / `to_rupees()` to convert.
+
+Only values confirmed against the API documentation or the live scrip master
+are listed here. Anything else can still be passed as a plain int/str.
 """
 
 from enum import IntEnum
 
 
 class Segment(IntEnum):
-    """Exchange segment identifiers."""
+    """Exchange segment identifiers, as published in the daily scrip master."""
     NSE_CASH = 1
     NSE_FO = 2
     BSE_CASH = 3
     BSE_FO = 4
-    NSE_CURRENCY = 13
     MCX = 5
+    MCX_SPOT = 6
+    NCDEX = 7
+    NCDEX_SPOT = 8
+    NSE_CURRENCY = 13
+    NSE_CURRENCY_SPOT = 14
 
 
 class Side(IntEnum):
@@ -43,7 +50,6 @@ class Side(IntEnum):
 class Validity(IntEnum):
     """Order validity."""
     DAY = 1
-    IOC = 2
 
 
 class _StrConst(str):
@@ -68,10 +74,20 @@ class ProductType:
     DELIVERY = _StrConst("D")
 
 
+class OptionType:
+    """Option right, as it appears in the scrip master."""
+    CALL = _StrConst("CE")
+    PUT = _StrConst("PE")
+
+
 class Resolution:
-    """Candle intervals accepted by HistoricalAPI.get_historical_data."""
+    """
+    Candle intervals accepted by ChartData.
+
+    These are the only intraday codes the API accepts - notably there is no
+    2- or 3-minute interval, and asking for one fails the whole request.
+    """
     MIN_1 = _StrConst("1")
-    MIN_3 = _StrConst("3")
     MIN_5 = _StrConst("5")
     MIN_10 = _StrConst("10")
     MIN_15 = _StrConst("15")
@@ -80,6 +96,43 @@ class Resolution:
     DAY = _StrConst("D")
     WEEK = _StrConst("W")
     MONTH = _StrConst("M")
+
+
+#: Every Interval code ChartData documents (intraday minutes, then end-of-day).
+VALID_RESOLUTIONS = ("1", "5", "10", "15", "30", "60", "D", "W", "M", "Q", "H", "Y", "T", "F")
+
+_RESOLUTION_ALIASES = {
+    "1m": "1", "1min": "1", "minute": "1",
+    "5m": "5", "5min": "5",
+    "10m": "10", "10min": "10",
+    "15m": "15", "15min": "15",
+    "30m": "30", "30min": "30",
+    "1h": "60", "60m": "60", "60min": "60", "hour": "60", "hourly": "60",
+    "d": "D", "1d": "D", "day": "D", "daily": "D",
+    "w": "W", "1w": "W", "week": "W", "weekly": "W",
+    "mo": "M", "1mo": "M", "month": "M", "monthly": "M",
+}
+
+
+def normalize_resolution(resolution) -> str:
+    """
+    Maps a friendly name ('5m', '1h', 'daily') or a Resolution constant onto the
+    code ChartData expects, and rejects codes the API does not support.
+
+    The API's own single-letter codes are case-sensitive here on purpose: 'M' is
+    monthly and 'H' is a long end-of-day interval, so a bare 'm' or 'h' is
+    rejected as ambiguous rather than guessed at. Write '5m' / '1h' for intraday.
+    """
+    raw = str(resolution).strip()
+    if raw in VALID_RESOLUTIONS:
+        return raw
+    alias = _RESOLUTION_ALIASES.get(raw.lower())
+    if alias:
+        return alias
+    raise ValueError(
+        f"Unsupported resolution {resolution!r}. ChartData accepts: "
+        f"{', '.join(VALID_RESOLUTIONS)} (or aliases such as '5m', '1h', 'daily')."
+    )
 
 
 def to_paisa(rupees: float) -> int:
@@ -98,7 +151,10 @@ __all__ = [
     "Validity",
     "OrderType",
     "ProductType",
+    "OptionType",
     "Resolution",
+    "VALID_RESOLUTIONS",
+    "normalize_resolution",
     "to_paisa",
     "to_rupees",
 ]

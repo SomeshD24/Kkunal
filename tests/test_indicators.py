@@ -108,11 +108,19 @@ class TestIndicators(unittest.TestCase):
         self.assertIn("MACD", result.columns)
         self.assertIn("MACD_Signal", result.columns)
         self.assertIn("MACD_Hist", result.columns)
+        valid = result.dropna()
         self.assertTrue(np.allclose(
-            result["MACD_Hist"].values,
-            (result["MACD"] - result["MACD_Signal"]).values,
+            valid["MACD_Hist"].values,
+            (valid["MACD"] - valid["MACD_Signal"]).values,
             atol=1e-10
         ))
+        # Slow EMA closes at bar 25; the 9-bar signal line eight bars later.
+        self.assertEqual(result["MACD"].first_valid_index(), 25)
+        self.assertEqual(result["MACD_Signal"].first_valid_index(), 33)
+
+    def test_macd_rejects_inverted_periods(self):
+        with self.assertRaises(ValueError):
+            macd(self.df, fast_period=26, slow_period=12)
 
     def test_stochastic(self):
         result = stochastic(self.df, k_period=14, d_period=3)
@@ -170,9 +178,17 @@ class TestIndicators(unittest.TestCase):
         result = parabolic_sar(self.df)
         self.assertIn("PSAR", result.columns)
         self.assertIn("PSAR_Trend", result.columns)
-        trends = result["PSAR_Trend"].unique()
-        for t in trends:
-            self.assertIn(t, [1, -1])
+        # Bar 0 has no SAR yet (two bars are needed to pick the opening direction).
+        self.assertTrue(pd.isna(result["PSAR"].iloc[0]))
+        self.assertEqual(result["PSAR_Trend"].iloc[0], 0)
+        self.assertTrue(result["PSAR_Trend"].iloc[1:].isin([1, -1]).all())
+        self.assertFalse(result["PSAR"].iloc[1:].isna().any())
+        # While bullish the SAR trails below the bar; while bearish, above it.
+        body = result.iloc[1:]
+        lows, highs = self.df["Low"].iloc[1:], self.df["High"].iloc[1:]
+        steady = body["PSAR_Trend"] == body["PSAR_Trend"].shift(1)      # skip reversal bars
+        self.assertTrue((body["PSAR"][steady & (body["PSAR_Trend"] == 1)] <= lows[steady & (body["PSAR_Trend"] == 1)] + 1e-9).all())
+        self.assertTrue((body["PSAR"][steady & (body["PSAR_Trend"] == -1)] >= highs[steady & (body["PSAR_Trend"] == -1)] - 1e-9).all())
 
     def test_ichimoku(self):
         result = ichimoku(self.df)

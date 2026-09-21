@@ -40,4 +40,4 @@ class PortfolioAPI:
 
     def get_dis_status(self) -> Dict[str, Any]:
         """Retrieves the DIS status."""
-        return self.client.request("POST", "api/OpenAPI/GetDISStatus", {})
+        return self.client.request("POST", "api/OpenAPI/GetDISStatus", {}, retry=True)

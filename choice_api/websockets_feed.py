@@ -2,29 +2,46 @@ import zlib
 import logging
 import time
 import threading
+from collections import OrderedDict
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Dict, List, Optional, Tuple
 import websocket
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_FEED_HOST = "wss://brd.choiceindia.co.in:4520"
 
 class PriceFeedSocketClient:
     """
     Live Price Feed Socket using FIX3.0 delimited ASCII formats and Zlib compression.
     Connects to the secure WebSocket (wss) endpoint using a background thread.
+
+    Subscriptions are remembered: they may be requested before the socket is up,
+    and are replayed automatically after every reconnect, so a network blip no
+    longer leaves the feed connected but silent.
     """
-    def __init__(self, vendor_id: str, access_token: str = "", host: str = "wss://brd.choiceindia.co.in:4520", port: int = None):
-        # We default to the secure websocket endpoint
-        self.host = host
+    def __init__(self, vendor_id: str, access_token: str = "", host: Optional[str] = DEFAULT_FEED_HOST,
+                 port: Optional[int] = None, resubscribe_delay: float = 2.0):
+        # We default to the secure websocket endpoint. `host=client.bcast_ip` is None when the
+        # login response carried no broadcast address, so fall back rather than crash the thread.
+        self.host = host or DEFAULT_FEED_HOST
         self.port = port
         self.vendor_id = vendor_id
-        self.access_token = access_token
-        
+        self.access_token = access_token or ""
+        self.resubscribe_delay = resubscribe_delay
+
         self.ws = None
         self.thread = None
         self._connected = False
-        self._callbacks = []
+        self._callbacks: List[Callable] = []
         self._is_running = False
+
+        # (kind, segment_id, token) -> session_id, in subscription order.
+        self._subscriptions: Dict[Tuple[str, int, int], str] = OrderedDict()
+        self._sub_lock = threading.RLock()
+        self._session_ready = False
+        self._flush_timer: Optional[threading.Timer] = None
+        self._reconnect_delay = 3.0
 
     def on_message(self, callback: Callable):
         """Registers a callback for parsed feed messages."""
@@ -43,6 +60,7 @@ class PriceFeedSocketClient:
     def stop_websocket(self):
         """Stops the WebSocket connection."""
         self._is_running = False
+        self._cancel_flush_timer()
         if self.ws:
             self.ws.close()
         if self.thread:
@@ -78,28 +96,73 @@ class PriceFeedSocketClient:
         final_msg = self._fix_message_length(msg)
         self._send_raw(final_msg)
 
+    def _send_subscription(self, kind: str, session_id: str, segment_id: int, token: int):
+        if kind == "touchline":
+            msg = f"63=FIX3.0|64=206|66={self._now()}|1={segment_id}$7={token}|230=1|4={session_id}|"
+        else:
+            msg = f"63=FIX3.0|64=127|66={self._now()}|1={segment_id}|7={token}|230=1|4={session_id}|"
+        self._send_raw(self._fix_message_length(msg))
+
+    def _subscribe(self, kind: str, session_id: str, segment_id: int, token: int):
+        with self._sub_lock:
+            self._subscriptions[(kind, int(segment_id), int(token))] = session_id
+            ready = self._session_ready
+        # Before the logon completes the request is only recorded; it is sent
+        # by _flush_subscriptions() as soon as the session is ready.
+        if ready:
+            self._send_subscription(kind, session_id, int(segment_id), int(token))
+
     def subscribe_touchline(self, session_id: str, segment_id: int, token: int):
-        """Subscribes to Touchline (Market Data)."""
-        msg = f"63=FIX3.0|64=206|66={self._now()}|1={segment_id}$7={token}|230=1|4={session_id}|"
-        final_msg = self._fix_message_length(msg)
-        self._send_raw(final_msg)
+        """Subscribes to Touchline (Market Data). Safe to call before the socket is connected."""
+        self._subscribe("touchline", session_id, segment_id, token)
 
     def subscribe_best_five(self, session_id: str, segment_id: int, token: int):
-        """Subscribes to Best Five (Depth Data)."""
-        msg = f"63=FIX3.0|64=127|66={self._now()}|1={segment_id}|7={token}|230=1|4={session_id}|"
-        final_msg = self._fix_message_length(msg)
-        self._send_raw(final_msg)
+        """Subscribes to Best Five (Depth Data). Safe to call before the socket is connected."""
+        self._subscribe("best_five", session_id, segment_id, token)
+
+    def _cancel_flush_timer(self):
+        timer, self._flush_timer = self._flush_timer, None
+        if timer:
+            timer.cancel()
+
+    def _flush_subscriptions(self):
+        """Sends every remembered subscription, once per connection."""
+        with self._sub_lock:
+            if self._session_ready or not self._connected:
+                return
+            self._session_ready = True
+            pending = list(self._subscriptions.items())
+        self._cancel_flush_timer()
+        for (kind, segment_id, token), session_id in pending:
+            try:
+                self._send_subscription(kind, session_id, segment_id, token)
+            except Exception as e:
+                logger.error("Failed to (re)subscribe %s %s/%s: %s", kind, segment_id, token, e)
+        if pending:
+            logger.info("Sent %d subscription(s) after logon.", len(pending))
 
     def _on_open(self, ws):
         logger.info("WEBSOCKET CONNECTED to Price Feed.")
         self._connected = True
+        self._reconnect_delay = 3.0
+        with self._sub_lock:
+            self._session_ready = False
         self.send_login()
+        # Subscriptions go out on the first message after the logon (its
+        # acknowledgement). The timer covers a server that never sends one.
+        self._cancel_flush_timer()
+        self._flush_timer = threading.Timer(self.resubscribe_delay, self._flush_subscriptions)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
 
     def _on_error(self, ws, error):
         logger.error(f"WEBSOCKET ERROR => {error}")
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._connected = False
+        with self._sub_lock:
+            self._session_ready = False
+        self._cancel_flush_timer()
         logger.warning(f"WEBSOCKET CLOSED => Code={close_status_code} | Msg={close_msg}")
 
     def _parse_fix(self, text: str) -> dict:
@@ -127,7 +190,7 @@ class PriceFeedSocketClient:
             "Raw": parsed
         }
         
-        # Prices in paisa to rupees
+        # Prices are delivered in paisa and deliberately left as-is
         price_fields = {
             "8": "LTP",
             "75": "Open",
@@ -181,6 +244,8 @@ class PriceFeedSocketClient:
                         logger.error(f"Feed callback error: {e}")
 
     def _on_message(self, ws, message):
+        if not self._session_ready:
+            self._flush_subscriptions()
         try:
             if isinstance(message, str):
                 message = message.encode()
@@ -242,5 +307,7 @@ class PriceFeedSocketClient:
                 logger.error(f"WebSocket Loop Error: {e}")
             
             if self._is_running:
-                logger.warning("Reconnecting websocket in 3 seconds...")
-                time.sleep(3)
+                logger.warning("Reconnecting websocket in %.0f seconds...", self._reconnect_delay)
+                time.sleep(self._reconnect_delay)
+                # Back off while the server stays down; _on_open resets this.
+                self._reconnect_delay = min(self._reconnect_delay * 2, 60.0)

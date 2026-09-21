@@ -10,10 +10,15 @@ from .websockets_feed import PriceFeedSocketClient
 from .exceptions import (
     ChoiceAPIError,
     AuthenticationError,
+    StaticIPError,
     APIResponseError,
+    RateLimitError,
+    HistoricalDataError,
+    OrderValidationError,
     NetworkError,
     InvalidResponseError,
     ScripMasterError,
+    AmbiguousSymbolError,
     WebSocketError,
 )
 from .constants import (
@@ -22,7 +27,9 @@ from .constants import (
     Validity,
     OrderType,
     ProductType,
+    OptionType,
     Resolution,
+    normalize_resolution,
     to_paisa,
     to_rupees,
 )
@@ -49,19 +56,23 @@ from .indicators import (
     stochastic,
     cci,
     williams_r,
+    mfi,
+    roc,
     # Volatility
     bollinger_bands,
     atr,
     donchian_channel,
+    keltner_channel,
     # Volume
     vwap,
     obv,
     # Candle Transformations & Levels
     heikin_ashi,
     pivot_points,
+    cpr,
 )
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __all__ = [
     "ChoiceClient",
     "BASE_URL_OMNE",
@@ -78,10 +89,15 @@ __all__ = [
     # Exceptions
     "ChoiceAPIError",
     "AuthenticationError",
+    "StaticIPError",
     "APIResponseError",
+    "RateLimitError",
+    "HistoricalDataError",
+    "OrderValidationError",
     "NetworkError",
     "InvalidResponseError",
     "ScripMasterError",
+    "AmbiguousSymbolError",
     "WebSocketError",
     # Constants
     "Segment",
@@ -89,7 +105,9 @@ __all__ = [
     "Validity",
     "OrderType",
     "ProductType",
+    "OptionType",
     "Resolution",
+    "normalize_resolution",
     "to_paisa",
     "to_rupees",
     # Indicator name resolution
@@ -114,14 +132,18 @@ __all__ = [
     "stochastic",
     "cci",
     "williams_r",
+    "mfi",
+    "roc",
     # Volatility
     "bollinger_bands",
     "atr",
     "donchian_channel",
+    "keltner_channel",
     # Volume
     "vwap",
     "obv",
     # Candle Transformations & Levels
     "heikin_ashi",
     "pivot_points",
+    "cpr",
 ]
