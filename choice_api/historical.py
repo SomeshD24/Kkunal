@@ -9,17 +9,31 @@ class HistoricalAPI:
         self.client = client
         
     def _parse_date(self, date_val: Union[str, int]) -> int:
+        """
+        Converts a date to the API's epoch (seconds since 1980-01-01).
+
+        Accepts an int (passed through unchanged), a datetime, or a string in
+        'YYYY-MM-DD' / 'YYYY-MM-DD HH:MM:SS' form. Anything else raises
+        ValueError rather than silently resolving to 1980-01-01.
+        """
+        if isinstance(date_val, bool):
+            raise TypeError("from_date/to_date must be a date string, datetime or int")
         if isinstance(date_val, int):
             return date_val
         epoch_1980 = datetime(1980, 1, 1)
+        if isinstance(date_val, datetime):
+            return int((date_val - epoch_1980).total_seconds())
         try:
             if " " in date_val:
                 dt = datetime.strptime(date_val, "%Y-%m-%d %H:%M:%S")
             else:
                 dt = datetime.strptime(date_val, "%Y-%m-%d")
-            return int((dt - epoch_1980).total_seconds())
-        except Exception:
-            return 0
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Could not parse date {date_val!r}. Expected 'YYYY-MM-DD', "
+                f"'YYYY-MM-DD HH:MM:SS', a datetime, or an int epoch offset."
+            ) from e
+        return int((dt - epoch_1980).total_seconds())
         
     def get_historical_data(self, segment_id: int, token: int, from_date: Union[str, int], to_date: Union[str, int], resolution: str) -> "pd.DataFrame":
         """

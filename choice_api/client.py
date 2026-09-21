@@ -30,11 +30,13 @@ class ChoiceClient:
         self,
         vendor_id: str,
         api_key: str,
-        base_url: str = BASE_URL_OMNE
+        base_url: str = BASE_URL_OMNE,
+        timeout: float = 30.0
     ):
         self.vendor_id = vendor_id
         self.api_key = api_key
         self.base_url = base_url.rstrip('/')
+        self.timeout = timeout
         
         self.session_id: Optional[str] = None
         self.access_token: Optional[str] = None
@@ -66,13 +68,23 @@ class ChoiceClient:
             headers["Authorization"] = f"SessionId {self.session_id}"
         return headers
 
-    def request(self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None, require_auth: bool = True) -> Dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict[str, Any]] = None,
+        require_auth: bool = True,
+        timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
         """Base method for making HTTP requests to the API."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         headers = self.get_headers(include_auth=require_auth)
-        
-        response = requests.request(method, url, headers=headers, json=data)
-        
+
+        response = requests.request(
+            method, url, headers=headers, json=data,
+            timeout=self.timeout if timeout is None else timeout
+        )
+
         try:
             response.raise_for_status()
             return response.json()

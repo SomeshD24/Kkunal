@@ -30,3 +30,11 @@ ENV/
 
 # Session & temporary data files
 *.json
+
+# Notebooks (may embed live API keys and account data in saved outputs)
+*.ipynb
+.ipynb_checkpoints/
+
+# Local scratch / nested clones - not part of the package
+Kkunal_repo/
+temp_check/

@@ -1,4 +1,24 @@
+import threading
+import time
 from typing import Dict, Any, Optional, Union, List, Tuple
+
+_ORDER_NO_LOCK = threading.Lock()
+_LAST_ORDER_NO = 0
+
+
+def _next_client_order_no() -> int:
+    """
+    Generates a unique, increasing ClientOrderNo that stays inside a 32-bit int.
+    Steps forward by one if several orders are placed within the same millisecond.
+    """
+    global _LAST_ORDER_NO
+    with _ORDER_NO_LOCK:
+        candidate = int(time.time() * 1000) % 2_000_000_000
+        if candidate <= _LAST_ORDER_NO:
+            candidate = _LAST_ORDER_NO + 1
+        _LAST_ORDER_NO = candidate
+        return candidate
+
 
 class OrdersAPI:
     def __init__(self, client):
@@ -6,8 +26,18 @@ class OrdersAPI:
         
     def place_order(self, segment_id: int, token: int, order_type: str, bs: int, qty: int,
                     price: float, trigger_price: float, validity: int, product_type: str, 
-                    disclosed_qty: int = 0, is_edis_req: bool = False) -> Dict[str, Any]:
-        """Places a new order."""
+                    disclosed_qty: int = 0, is_edis_req: bool = False,
+                    client_order_no: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Places a new order.
+
+        Args:
+            client_order_no: Your own reference number for this order, used later by
+                modify_order/cancel_order. Left as None, a unique one is generated.
+        """
+        if client_order_no is None:
+            client_order_no = _next_client_order_no()
+
         payload = {
             "SegmentId": segment_id,
             "Token": token,
@@ -24,7 +54,7 @@ class OrdersAPI:
             "ModeTyp": "WEBAPI",
             "Mode": 1,
             "DeviceId": "MAC",
-            "ClientOrderNo": 123456
+            "ClientOrderNo": client_order_no
         }
         return self.client.request("POST", "api/OpenAPI/V2/NewOrder", payload)
 

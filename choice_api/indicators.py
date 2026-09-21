@@ -23,7 +23,7 @@ import pandas as pd
 
 def _validate_period(period: int, name: str = "period") -> None:
     """Validates that a period parameter is a positive integer."""
-    if not isinstance(period, int) or period < 1:
+    if isinstance(period, bool) or not isinstance(period, (int, np.integer)) or period < 1:
         raise ValueError(f"{name} must be a positive integer, got {period}")
 
 
@@ -327,6 +327,12 @@ def parabolic_sar(
     close = _get_col(df, "Close").values
     n = len(df)
 
+    if n == 0:
+        return pd.DataFrame(
+            {"PSAR": np.zeros(0), "PSAR_Trend": np.zeros(0, dtype=int)},
+            index=df.index
+        )
+
     psar = np.zeros(n)
     trend = np.ones(n, dtype=int)
     af = np.zeros(n)
@@ -460,8 +466,14 @@ def rsi(df: pd.DataFrame, period: int = 14, column: str = "Close") -> pd.Series:
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi_series = 100 - (100 / (1 + rs))
-    rsi_series = rsi_series.fillna(100)  # Handles zero loss edge case
-    rsi_series.iloc[:period-1] = np.nan
+
+    # Edge cases: no losses in the window => 100; a completely flat window => 50.
+    rsi_series = rsi_series.where(avg_loss != 0, 100.0)
+    rsi_series = rsi_series.where(~((avg_gain == 0) & (avg_loss == 0)), 50.0)
+
+    # `delta` is undefined on the first bar, so the first complete window of
+    # `period` deltas only closes at index `period`.
+    rsi_series.iloc[:period] = np.nan
     return rsi_series.rename(f"RSI_{period}")
 
 
@@ -549,13 +561,15 @@ def bollinger_bands(
 ) -> pd.DataFrame:
     """
     Bollinger Bands.
+    Uses the population standard deviation (ddof=0), matching TradingView and
+    most charting platforms.
     Returns DataFrame with columns: BB_Upper, BB_Middle, BB_Lower, BB_Bandwidth, BB_PercentB
     """
     _validate_df(df)
     _validate_period(period)
     s = _get_col(df, column)
     middle = s.rolling(window=period, min_periods=1).mean()
-    std = s.rolling(window=period, min_periods=1).std().fillna(0)
+    std = s.rolling(window=period, min_periods=1).std(ddof=0).fillna(0)
 
     upper = middle + (std * std_dev)
     lower = middle - (std * std_dev)
@@ -673,6 +687,12 @@ def heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     low = _get_col(df, "Low").values.copy()
     close = _get_col(df, "Close").values.copy()
 
+    if len(df) == 0:
+        return pd.DataFrame(
+            {c: np.zeros(0) for c in ("HA_Open", "HA_High", "HA_Low", "HA_Close")},
+            index=df.index
+        )
+
     ha_close = (opn + high + low + close) / 4.0
     ha_open = np.zeros(len(df))
     ha_open[0] = (opn[0] + close[0]) / 2.0
@@ -698,6 +718,9 @@ def pivot_points(
     """
     Pivot Points calculator.
 
+    Levels are derived from the PREVIOUS bar's High/Low/Close, so the values on
+    any given bar are known before that bar opens. The first bar is therefore NaN.
+
     Args:
         df: DataFrame with High, Low, Close columns.
         method: 'standard', 'fibonacci', or 'camarilla'.
@@ -706,9 +729,9 @@ def pivot_points(
         DataFrame with Pivot, R1-R3, S1-S3 columns.
     """
     _validate_df(df)
-    high = _get_col(df, "High")
-    low = _get_col(df, "Low")
-    close = _get_col(df, "Close")
+    high = _get_col(df, "High").shift(1)
+    low = _get_col(df, "Low").shift(1)
+    close = _get_col(df, "Close").shift(1)
 
     pivot = (high + low + close) / 3.0
 

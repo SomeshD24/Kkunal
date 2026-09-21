@@ -92,6 +92,9 @@ class ScripMaster:
             list[dict] when segment is None — all matching rows.
             str or None when segment is specified — single token or None.
         """
+        if not self.is_loaded:
+            logger.warning("Scrip master is not loaded; call fetch() first. Returning no match.")
+
         rows = self.symbol_to_rows.get(symbol_or_desc, [])
         
         if segment:

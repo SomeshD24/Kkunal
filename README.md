@@ -35,6 +35,12 @@ session_id = client.login(mobile_no="1234567890")
 print(f"Session ID: {session_id}")
 ```
 
+All HTTP calls use a 30 second timeout by default. Override it per client:
+
+```python
+client = ChoiceClient(vendor_id="...", api_key="...", timeout=60)
+```
+
 ### Session Persistence
 
 You can save and reload sessions to avoid logging in repeatedly during the same trading day:
@@ -126,6 +132,7 @@ print(lot)  # 1 for equity, 250 for NIFTY futures, etc.
 | `validity` | `int` | `1` = Day |
 | `product_type` | `str` | `"M"` = Intraday (Margin), `"D"` = Delivery/CarryForward |
 | `disclosed_qty` | `int` | Optional. Disclosed quantity (default `0`) |
+| `client_order_no` | `int` | Optional. Your own reference number, used later by `modify_order`/`cancel_order`. A unique one is generated if omitted. |
 
 ```python
 response = client.orders.place_order(
@@ -448,6 +455,10 @@ ichi_df = ichimoku(df)
 pp_df = pivot_points(df, method="camarilla")
 ```
 
+> **Notes**
+> - `bollinger_bands` uses the **population** standard deviation (`ddof=0`), so bands line up with TradingView.
+> - `pivot_points` derives each bar's levels from the **previous** bar's High/Low/Close, so they are known before the bar opens. The first row is therefore `NaN`.
+
 #### 4. Signal Crossover Detection
 ```python
 from choice_api import crossover, crossunder, ema
@@ -496,36 +507,37 @@ if __name__ == "__main__":
 
 Receives live Level 1 (Touchline) and Level 2 (Best Five / Depth) market data via TCP socket with Zlib compression.
 
+This client is **synchronous** — it runs on a background thread, so no `asyncio` is needed.
+
 ```python
-import asyncio
+import time
 from choice_api import PriceFeedSocketClient
 
-async def main():
-    feed = PriceFeedSocketClient(
-        host=client.bcast_ip,
-        port=client.bcast_port,
-        vendor_id=client.vendor_id,
-        access_token=client.access_token
-    )
+feed = PriceFeedSocketClient(
+    host=client.bcast_ip,
+    port=client.bcast_port,
+    vendor_id=client.vendor_id,
+    access_token=client.access_token
+)
 
-    # Register callback for live market data
-    feed.on_message(lambda data: print(f"Market Data: {data}"))
+# Register callback for live market data
+feed.on_message(lambda data: print(f"Market Data: {data}"))
 
-    # Connect to the feed (automatically sends login)
-    asyncio.create_task(feed.connect())
-    await asyncio.sleep(2) # Give it a moment to connect
+# Start the background thread (automatically sends login and reconnects on drop)
+feed.start_websocket()
+time.sleep(2)  # Give it a moment to connect
 
-    # Subscribe to touchline and best five data
-    feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
-    feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
+# Subscribe to touchline and best five data
+feed.subscribe_touchline(client.session_id, segment_id=1, token=2885)
+feed.subscribe_best_five(client.session_id, segment_id=1, token=2885)
 
-    # Keep the task running
-    await asyncio.sleep(3600)
-
-# IMPORTANT: If running in a Jupyter Notebook, use `await main()` instead of `asyncio.run(main())`
-if __name__ == "__main__":
-    asyncio.run(main())
+try:
+    time.sleep(3600)
+finally:
+    feed.stop_websocket()
 ```
+
+> **Note:** prices in the feed are delivered in **paisa**, not rupees — divide by 100 yourself if you need rupees.
 
 ---
 
