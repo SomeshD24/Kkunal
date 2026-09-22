@@ -87,8 +87,9 @@ several ways of silently getting a wrong answer have been closed.
 - EMA-family indicators now return `NaN` until their first window is full, like every other
   windowed indicator; Parabolic SAR has no value on the first bar.
 - Packaging moved to `pyproject.toml` (PEP 621) with a single-source version; `setup.py` removed.
-- Minimum Python is 3.8, the floor of the declared dependencies.
-- CI runs the test suite on Python 3.8-3.13 (Linux and Windows) plus ruff and mypy, and a
+- Minimum Python is 3.9. (3.8 has been end-of-life since October 2024, and the build
+  backend needed for the new licence metadata does not support it.)
+- CI runs the test suite on Python 3.9-3.13 (Linux and Windows) plus ruff and mypy, and a
   release cannot publish unless it passes.
 
 ### Upgrade notes

@@ -8,7 +8,7 @@ A Python library for the Choice FINX Trading API. Supports REST API, Interactive
 pip install kkunal
 ```
 
-All dependencies (`requests`, `websockets`, `websocket-client`, `pandas`, `numpy`) are installed automatically. Python 3.8+.
+All dependencies (`requests`, `websockets`, `websocket-client`, `pandas`, `numpy`) are installed automatically. Python 3.9+.
 
 ---
 

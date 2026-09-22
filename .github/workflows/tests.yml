@@ -17,10 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.11", "3.13"]
+        python-version: ["3.9", "3.11", "3.13"]     # 3.9 is the oldest supported
         include:
-          - os: ubuntu-22.04      # oldest supported interpreter
-            python-version: "3.8"
           - os: windows-latest    # file locking, permissions and paths differ here
             python-version: "3.12"
 
