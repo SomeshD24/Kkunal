@@ -1,9 +1,9 @@
 import logging
 import numbers
 from typing import List, Optional, Tuple, Union, TYPE_CHECKING
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
-from .constants import normalize_resolution
+from .constants import IST, normalize_resolution
 from .exceptions import HistoricalDataError
 from .indicators import INDICATOR_ALIASES, resolve_indicator
 from ._responses import is_success, failure_message
@@ -14,8 +14,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CHART_ENDPOINT = "api/OpenGraph/ChartData"
+# The API counts seconds from this instant in IST WALL-CLOCK terms, so this and the
+# datetimes compared against it are deliberately naive. Timezone-aware inputs are
+# converted to IST first (see _parse_date), never subtracted while still aware.
 EPOCH_1980 = datetime(1980, 1, 1)
-IST = timezone(timedelta(hours=5, minutes=30))
 COLUMNS = ["Time", "Open", "High", "Low", "Close", "Volume", "OI"]
 
 # Longest span requested in a single ChartData call, per interval. The endpoint

@@ -22,6 +22,9 @@ from .exceptions import (
     WebSocketError,
 )
 from .constants import (
+    IST,
+    ist_now,
+    ist_today,
     Segment,
     Side,
     Validity,
@@ -72,7 +75,7 @@ from .indicators import (
     cpr,
 )
 
-__version__ = "1.5.1"
+__version__ = "1.5.2"
 __all__ = [
     "ChoiceClient",
     "BASE_URL_OMNE",
@@ -100,6 +103,9 @@ __all__ = [
     "AmbiguousSymbolError",
     "WebSocketError",
     # Constants
+    "IST",
+    "ist_now",
+    "ist_today",
     "Segment",
     "Side",
     "Validity",

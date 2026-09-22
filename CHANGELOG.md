@@ -4,6 +4,42 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.2] - 2026-09-22
+
+### Fixed
+
+Two defects found by a full audit of the library (static analysis, concurrency stress,
+indicator fuzzing, protocol fuzzing and a live run against the exchange's instrument file).
+
+- **The trading day was taken from the machine's clock, not from IST.** A Choice session is
+  valid for one IST trading day, but sessions were stamped and checked against the *local*
+  date. More than a few hours away from IST the two disagree, so a live session was thrown
+  away and a new login performed - another OTP - or a dead one kept past its expiry. The
+  daily scrip master was fetched for the wrong calendar day for the same reason, returning
+  the previous day's contracts. Everything that means "today" now means today in IST;
+  `IST`, `ist_now()` and `ist_today()` are exported. This changes nothing for a machine
+  running in India.
+- **`to_paisa()` rounded unpredictably at half a paisa.** It used Python's `round()`, which
+  is half-to-even, so `2.675` rounded up to 268 while `2.685` rounded down to 268, and
+  `0.005` became `0` - a price rounded away entirely. It now rounds half away from zero, the
+  convention for money, and reads the value as a decimal string so the binary representation
+  of the float cannot shift the result.
+
+### Changed
+
+- The FIX price-feed header timestamp is sent in IST rather than the machine's local time.
+- The unreachable `assert` on the retry-exhausted path is a real raise, so it cannot be
+  stripped by `python -O`.
+
+### Audit summary
+
+No other defects found. 25 indicators over 12 pathological inputs (empty, single row, flat,
+zero and negative prices, NaN, 1e12, 1e-9, High < Low) produced no exception, no infinity and
+no warning; 19 malformed or hostile feed packets left the socket reader running; 32 threads
+racing a dead session produced exactly one re-login; indicator output still matches TA-Lib to
+1e-12; history windows tile with no gaps or overlaps; and none of nine credential-leak paths
+put a secret into a message or a log line.
+
 ## [1.5.1] - 2026-09-22
 
 ### Fixed

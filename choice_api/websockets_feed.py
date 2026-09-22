@@ -3,9 +3,10 @@ import logging
 import time
 import threading
 from collections import OrderedDict
-from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 import websocket
+
+from .constants import ist_now
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,8 @@ class PriceFeedSocketClient:
         logger.info("PriceFeedSocketClient stopped.")
 
     def _now(self):
-        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        """Exchange-clock timestamp for the FIX header, not the machine's local time."""
+        return ist_now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _fix_message_length(self, msg: str) -> str:
         parts = [p for p in msg.split("|") if p and not p.startswith("65=")]

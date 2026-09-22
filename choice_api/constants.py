@@ -24,7 +24,30 @@ Only values confirmed against the API documentation or the live scrip master
 are listed here. Anything else can still be passed as a plain int/str.
 """
 
+import datetime as _dt
+from decimal import Decimal, ROUND_HALF_UP
 from enum import IntEnum
+
+#: Indian Standard Time. Exchange sessions, contract expiries and the API's own
+#: timestamps are all IST, and a Choice session is valid for one IST trading day,
+#: so the library reasons in IST rather than in the machine's local timezone.
+IST = _dt.timezone(_dt.timedelta(hours=5, minutes=30))
+
+
+def ist_now() -> _dt.datetime:
+    """The current moment in IST, regardless of the machine's timezone."""
+    return _dt.datetime.now(tz=IST)
+
+
+def ist_today() -> _dt.date:
+    """
+    Today's date in IST - the exchange's trading day.
+
+    Using the local date instead would, on a machine more than a few hours from
+    IST, place a still-valid session on the wrong calendar day and force a
+    needless re-login (and so another OTP).
+    """
+    return ist_now().date()
 
 
 class Segment(IntEnum):
@@ -136,8 +159,16 @@ def normalize_resolution(resolution) -> str:
 
 
 def to_paisa(rupees: float) -> int:
-    """Converts rupees to the paisa integer the order API expects (1300.5 -> 130050)."""
-    return int(round(float(rupees) * 100))
+    """
+    Converts rupees to the paisa integer the order API expects (1300.5 -> 130050).
+
+    Exact half-paisa values round away from zero, the usual convention for money.
+    Python's built-in round() is half-to-EVEN, which would make the result
+    unpredictable at a boundary - 2.685 down to 268 but 2.675 up to 268 - and
+    would turn 0.005 into 0. The value is read as a decimal string, so the
+    binary representation of the float cannot shift the result either.
+    """
+    return int(Decimal(str(rupees)).scaleb(2).quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
 
 def to_rupees(paisa: float) -> float:
@@ -146,6 +177,9 @@ def to_rupees(paisa: float) -> float:
 
 
 __all__ = [
+    "IST",
+    "ist_now",
+    "ist_today",
     "Segment",
     "Side",
     "Validity",

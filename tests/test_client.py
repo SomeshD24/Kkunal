@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import tempfile
@@ -440,6 +441,107 @@ class TestOTPSpend(unittest.TestCase):
                                return_value=fake_response(400, None, text=body)):
             with self.assertRaises(AuthenticationError):
                 client.portfolio.get_holdings()
+
+
+class TestTradingDayIsIST(unittest.TestCase):
+    """
+    A Choice session is valid for one IST trading day. Using the machine's local
+    date instead would, from a timezone far from IST, discard a live session (and
+    so cost an OTP) or keep a dead one past its expiry.
+    """
+
+    def test_ist_helpers(self):
+        from choice_api import IST, ist_now, ist_today
+        self.assertEqual(IST.utcoffset(None), datetime.timedelta(hours=5, minutes=30))
+        self.assertEqual(ist_now().tzinfo, IST)
+        self.assertEqual(ist_today(), ist_now().date())
+
+    def test_ist_date_is_independent_of_the_local_clock(self):
+        """Same instant, machines 25 hours apart: the trading day must not move."""
+        from choice_api.constants import IST
+        instant = datetime.datetime(2026, 9, 22, 9, 30, tzinfo=IST)
+        for offset in (-12, -8, 0, 5.5, 9, 13):
+            local = instant.astimezone(datetime.timezone(datetime.timedelta(hours=offset)))
+            with self.subTest(utc_offset=offset):
+                self.assertEqual(local.astimezone(IST).date(), datetime.date(2026, 9, 22))
+
+    def test_session_file_uses_the_ist_trading_day(self):
+        import choice_api.client as client_module
+        client = make_client()
+        client.session_id = "sess-tz-abcdef"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.json")
+            client.save_session(path)
+            with open(path) as f:
+                self.assertEqual(json.load(f)["date"], client_module.ist_today().isoformat())
+
+            # A machine whose local date has already rolled over must still accept it.
+            restored = make_client()
+            self.assertTrue(restored.load_session(path))
+            self.assertEqual(restored.session_id, "sess-tz-abcdef")
+
+    def test_a_session_from_another_ist_day_is_still_rejected(self):
+        import choice_api.client as client_module
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "session.json")
+            yesterday = client_module.ist_today() - datetime.timedelta(days=1)
+            with open(path, "w") as f:
+                json.dump({"date": yesterday.isoformat(), "session_id": "stale-abcdef"}, f)
+            self.assertFalse(make_client().load_session(path))
+
+    def test_scrip_master_asks_for_the_ist_day(self):
+        from choice_api import ScripMaster
+        from choice_api.constants import ist_now
+        asked = []
+
+        def capture(request, timeout=None):
+            asked.append(request.full_url)
+            raise OSError("no network in tests")
+
+        with mock.patch("urllib.request.urlopen", side_effect=capture):
+            ScripMaster(cache_dir=tempfile.mkdtemp()).fetch(lookback_days=1)
+        expected = ist_now().strftime("%d") + ist_now().strftime("%Y")
+        self.assertTrue(asked and asked[0].endswith(".csv"))
+        self.assertIn(expected[:2], asked[0])          # IST day-of-month, not the local one
+
+    def test_feed_timestamp_is_ist(self):
+        from choice_api import PriceFeedSocketClient
+        from choice_api.constants import ist_now
+        stamp = PriceFeedSocketClient(vendor_id="V")._now()
+        self.assertEqual(stamp[:13], ist_now().strftime("%Y-%m-%d %H")[:13])
+
+
+class TestMoneyRounding(unittest.TestCase):
+    """Prices reach the exchange as whole paisa, so the rounding must be predictable."""
+
+    def test_exact_values(self):
+        self.assertEqual(to_paisa(1300.50), 130050)
+        self.assertEqual(to_paisa(1300), 130000)
+        self.assertEqual(to_paisa(19.99), 1999)
+        self.assertEqual(to_paisa(0), 0)
+
+    def test_half_paisa_rounds_away_from_zero_not_to_even(self):
+        """round() is half-to-EVEN, which made 2.685 -> 268 but 2.675 -> 268."""
+        self.assertEqual(to_paisa(2.675), 268)
+        self.assertEqual(to_paisa(2.685), 269)
+        self.assertEqual(to_paisa(1.125), 113)
+        self.assertEqual(to_paisa(0.025), 3)
+
+    def test_a_small_price_is_never_rounded_away_to_zero(self):
+        self.assertEqual(to_paisa(0.005), 1)
+        self.assertGreater(to_paisa(0.001), -1)
+
+    def test_binary_float_representation_does_not_shift_the_result(self):
+        from decimal import Decimal, ROUND_HALF_UP
+        for i in range(1, 500):
+            value = f"{i}.005"
+            expected = int(Decimal(value).scaleb(2).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+            with self.subTest(price=value):
+                self.assertEqual(to_paisa(float(value)), expected)
+
+    def test_round_trip(self):
+        for value in (1300.50, 19.99, 0.05, 2499.95, 99999.99):
+            self.assertAlmostEqual(to_rupees(to_paisa(value)), value, places=2)
 
 
 class TestSessionPersistence(unittest.TestCase):

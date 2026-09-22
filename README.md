@@ -185,7 +185,24 @@ still be passed as a plain int/str. Note there is **no 2- or 3-minute candle int
 API rejects it.
 
 Prices are in **paisa**, not rupees. `to_paisa(1300.50)` → `130050`, and
-`to_rupees(130050)` → `1300.50`.
+`to_rupees(130050)` → `1300.50`. Exact half-paisa values round away from zero, the
+convention for money, so `to_paisa(2.685)` is `269` rather than the `268` Python's
+own half-to-even `round()` would give.
+
+### Time zones
+
+Everything the library treats as "today" — session validity, the daily scrip master,
+the nearest unexpired contract, the price-feed timestamp — means today in **IST**, the
+exchange's clock, whatever timezone the machine runs in. `IST`, `ist_now()` and
+`ist_today()` are exported if you need the same reference:
+
+```python
+from choice_api import IST, ist_today
+```
+
+Dates you pass to the historical API are IST wall-clock too. A timezone-aware value is
+converted rather than truncated, so `datetime(2024, 1, 15, 3, 45, tzinfo=timezone.utc)`
+is read as 09:15 IST.
 
 ---
 

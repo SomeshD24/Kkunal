@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from .constants import ist_now, ist_today
 from .exceptions import AmbiguousSymbolError
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ def _parse_expiry(raw: Any) -> Optional[date]:
     text = str(raw or "").strip().upper()
     if not text:
         return None
+    # An expiry is a calendar date, so it carries no time and needs no timezone.
     try:
         if len(text) == 7 and text[2:5] in _MONTHS:                    # 29SEP26
             return date(2000 + int(text[5:]), _MONTHS[text[2:5]], int(text[:2]))
@@ -151,7 +153,8 @@ class ScripMaster:
             force: Skip the on-disk cache and download again.
         """
         for days_back in range(max(1, lookback_days)):
-            target_date = datetime.now() - timedelta(days=days_back)
+            # The master is published per IST trading day; the local date can differ.
+            target_date = ist_now() - timedelta(days=days_back)
             # Month abbreviations must be English regardless of the OS locale.
             date_str = f"{target_date.day:02d}{list(_MONTHS)[target_date.month - 1].title()}{target_date.year}"
 
@@ -410,7 +413,7 @@ class ScripMaster:
     def _pick_expiry(self, rows: List[dict], expiry: Optional[ExpiryLike], symbol: str) -> date:
         available = sorted({e for e in (self._expiry_of(r) for r in rows) if e is not None})
         if expiry is None:
-            today = date.today()
+            today = ist_today()
             upcoming = [e for e in available if e >= today]
             if not upcoming:
                 raise KeyError(f"No unexpired contracts for {symbol!r}.")

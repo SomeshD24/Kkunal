@@ -21,6 +21,7 @@ from .exceptions import (
     StaticIPError,
     remember_secret,
 )
+from .constants import ist_today
 from .ratelimit import TokenBucket
 from ._responses import is_success, failure_message
 
@@ -372,7 +373,9 @@ class ChoiceClient:
                                path, last_error, attempt + 1, attempts - 1, delay)
                 time.sleep(delay)
 
-        assert last_error is not None
+        if last_error is None:            # unreachable; never trust that silently
+            raise ChoiceAPIError(f"Request to {path} failed with no recorded error",
+                                 endpoint=path)
         raise last_error
 
     # ----------------------------------------------------------------- auth
@@ -420,7 +423,7 @@ class ChoiceClient:
             self._session_file = session_file
 
             # Logging in again would send another OTP for a session we already have.
-            if not force and self.session_id and self._login_date == datetime.date.today():
+            if not force and self.session_id and self._login_date == ist_today():
                 logger.debug("Reusing the session this client already holds")
                 return self.session_id
 
@@ -477,7 +480,7 @@ class ChoiceClient:
 
             self.session_id = session_id
             self._session_created_at = time.monotonic()
-            self._login_date = datetime.date.today()
+            self._login_date = ist_today()
             # If AccessToken isn't present, fall back to the Bearer API_KEY since
             # some versions of the API allow the same JWT to be reused for the WS.
             # This must cover the plain-string response too, or the price feed
@@ -508,7 +511,7 @@ class ChoiceClient:
         if not self.session_id:
             return False
         payload = json.dumps({
-            "date": datetime.date.today().isoformat(),
+            "date": ist_today().isoformat(),
             "session_id": self.session_id,
             "access_token": self.access_token,
             "bcast_ip": self.bcast_ip,
@@ -552,11 +555,13 @@ class ChoiceClient:
 
         if not isinstance(data, dict) or not data.get("session_id"):
             return False
-        if data.get("date") != datetime.date.today().isoformat():
+        # Sessions expire with the IST trading day, so compare in IST: on a machine
+        # far from IST the local date can differ and would discard a live session.
+        if data.get("date") != ist_today().isoformat():
             return False
 
         self.session_id = data["session_id"]
-        self._login_date = datetime.date.today()
+        self._login_date = ist_today()
         # A session restored from disk is already hours old as far as the cooldown
         # is concerned: if it is dead, re-logging in is the right move.
         self._session_created_at = time.monotonic() - self.relogin_cooldown
