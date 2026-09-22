@@ -82,6 +82,45 @@ with ChoiceClient.from_env() as client:
 With `session_file=` the session is deliberately **left alive** on exit so the next run can reuse
 it; call `client.logoff()` yourself to end it (that also deletes the saved file).
 
+### Why am I getting an OTP over and over?
+
+Every completed login sends a one-time password to the registered mobile, so an
+unexpected stream of them means something is logging in more often than you think.
+Turn on logging and each one is announced before it happens:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+# INFO choice_api.client: Requesting a new session - this sends an OTP to the registered mobile.
+```
+
+The usual causes, in order:
+
+1. **No `session_file`.** Without it every run of your script is a fresh login, and
+   so a fresh OTP. Add it and the rest of the day costs nothing:
+
+   ```python
+   client.login(mobile_no="1234567890", session_file="session.json")
+   ```
+
+2. **`login()` called more than once.** Calling it again when this client already
+   holds today's session now reuses that session instead of logging in. Use
+   `force=True` only when you deliberately want to discard the current one.
+
+3. **Several processes or notebooks at once.** Each `ChoiceClient` logs in
+   separately; point them at the same `session_file` to share one session.
+
+4. **Something rejecting a session that is not actually expired.** If a session is
+   refused within seconds of being issued, the session is not the problem - the
+   usual culprits are a wrong vendor id or API key, or a request coming from an IP
+   that is not the static IP registered for the key. The library logs this and
+   raises `StaticIPError` or `AuthenticationError` rather than logging in again;
+   set `relogin_cooldown=` to change the window, or `auto_relogin=False` to turn
+   automatic re-login off entirely.
+
+Login requests are never retried, so a network failure during login cannot produce
+a second OTP.
+
 ### Reliability
 
 | Behaviour | Default | Change it with |
@@ -90,6 +129,7 @@ it; call `client.logoff()` yourself to end it (that also deletes the saved file)
 | Retries on timeout, HTTP 429 and 5xx, with backoff (`Retry-After` is honoured) | 2 | `max_retries=` |
 | Failover between the two Choice gateways when one is unreachable | on | `failover=False` |
 | Re-login and replay when the session is rejected mid-day | on | `auto_relogin=False` |
+| Refuse to re-login (and so to send another OTP) when the rejected session is newer than this | 120 s | `relogin_cooldown=` |
 | Client-side rate limiting (requests per second) | off | `rate_limit=3`, `order_rate_limit=5` |
 | Raise when a response body says `Status != "Success"` | off | `raise_on_error=True` |
 

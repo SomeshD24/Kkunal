@@ -42,14 +42,20 @@ GATEWAYS = (BASE_URL_OMNE, BASE_URL_FINX)
 
 # A 401 from a login endpoint means "these credentials are wrong", not "the
 # session expired", so the automatic re-login must never fire for them.
+#
+# These endpoints also generate and deliver a one-time password, so they are
+# never retried either: a retry cannot tell "the server never saw it" from
+# "the server sent an OTP and the reply was lost", and the second case puts
+# another message on the user's phone.
 _AUTH_ENDPOINT_PREFIX = "api/OpenAPIV1/"
 
 # Substrings of a 4xx body that identify the failure more precisely than the
 # status code does. Kept narrow on purpose: a bare "session" would also match
 # "market session closed" on an ordinary order rejection.
 _STATIC_IP_MARKERS = ("static ip", "ip not", "invalid ip", "ip address", "whitelist")
-_AUTH_MARKERS = ("invalid session", "session expired", "session id", "sessionid",
-                 "unauthor", "invalid token", "token expired", "not logged in")
+_AUTH_MARKERS = ("invalid session", "session expired", "session has expired",
+                 "session not found", "unauthor", "invalid token", "token expired",
+                 "not logged in", "please login", "please log in", "re-login", "relogin")
 
 _MAX_RETRY_AFTER = 60.0
 
@@ -104,7 +110,11 @@ class ChoiceClient:
         order_rate_limit: Optional cap on order requests per second. Exchanges
             require strategies sending 10+ orders/second to be registered as algos.
         auto_relogin: Log in again and replay the request once when the session
-            is rejected mid-day. Needs a prior login() in this process.
+            is rejected mid-day. Needs a prior login() in this process. Each
+            re-login sends the user a new OTP, so see relogin_cooldown.
+        relogin_cooldown: Seconds during which a freshly issued session will not be
+            replaced again. A session rejected this soon after being issued is not
+            an expired one, so re-logging in would only send more OTPs.
         failover: Switch between the two gateways when one is unreachable.
         raise_on_error: Raise APIResponseError when a response body reports a
             Status other than Success, instead of returning it to the caller.
@@ -119,6 +129,7 @@ class ChoiceClient:
         rate_limit: Optional[float] = None,
         order_rate_limit: Optional[float] = None,
         auto_relogin: bool = True,
+        relogin_cooldown: float = 120.0,
         failover: bool = True,
         raise_on_error: bool = False
     ):
@@ -132,6 +143,7 @@ class ChoiceClient:
         self.timeout = timeout
         self.max_retries = max(0, int(max_retries))
         self.auto_relogin = auto_relogin
+        self.relogin_cooldown = max(0.0, float(relogin_cooldown))
         self.failover = failover
         self.raise_on_error = raise_on_error
 
@@ -146,6 +158,9 @@ class ChoiceClient:
         self._order_bucket = TokenBucket(order_rate_limit) if order_rate_limit else None
         self._mobile_no: Optional[str] = None
         self._session_file: Optional[str] = None
+        self._login_date: Optional[datetime.date] = None
+        # Far enough in the past that a session loaded from disk may be refreshed.
+        self._session_created_at = time.monotonic() - relogin_cooldown
 
         remember_secret(api_key)
 
@@ -221,14 +236,31 @@ class ChoiceClient:
         return True
 
     def _relogin(self, failed_session: Optional[str]) -> bool:
-        """Re-authenticates after a rejected session. True if a fresh session is ready."""
+        """
+        Re-authenticates after a rejected session. True if a fresh session is ready.
+
+        A session that was issued only moments ago and is already being rejected is
+        not an expired session - the cause is something else (a wrong vendor id, an
+        undeclared IP, an endpoint the account cannot use). Logging in again would
+        not fix it and would send the user another OTP for every request they make,
+        so within `relogin_cooldown` of the last login this refuses and lets the
+        AuthenticationError reach the caller.
+        """
         if not self.auto_relogin or not self._mobile_no:
             return False
         with self._auth_lock:
             # Another thread may already have replaced the dead session.
             if self.session_id and self.session_id != failed_session:
                 return True
-            logger.info("Session rejected; logging in again")
+
+            age = time.monotonic() - self._session_created_at
+            if age < self.relogin_cooldown:
+                logger.error(
+                    "A session issued %.0fs ago was rejected, so logging in again will not help - not requesting another OTP. Check the vendor id, API key and that this machine's public IP is the one registered for the key.", age
+                )
+                return False
+
+            logger.info("Session rejected after %.0fs; logging in again", age)
             self.login(self._mobile_no, session_file=self._session_file, force=True)
             return True
 
@@ -258,6 +290,9 @@ class ChoiceClient:
         is_auth_call = path.startswith(_AUTH_ENDPOINT_PREFIX)
         if retry is None:
             retry = method == "GET"
+        if is_auth_call:
+            # Each attempt would cost the user another OTP.
+            retry = False
         attempts = (self.max_retries if retry else 0) + 1
         bucket = self._order_bucket if is_order else self._data_bucket
         last_error: Optional[Exception] = None
@@ -369,7 +404,9 @@ class ChoiceClient:
                 reused instead of logging in again, and a fresh login is saved
                 back to it. If the saved session turns out to be dead, the next
                 request logs in again transparently (see auto_relogin).
-            force: Ignore any saved session and perform a fresh login.
+            force: Request a new session even if one is already held. Every login
+                sends the user an OTP, so calling login() again when this client
+                already has today's session reuses it instead.
 
         Returns:
             The acquired SessionId.
@@ -382,19 +419,27 @@ class ChoiceClient:
             self._mobile_no = str(mobile_no)
             self._session_file = session_file
 
+            # Logging in again would send another OTP for a session we already have.
+            if not force and self.session_id and self._login_date == datetime.date.today():
+                logger.debug("Reusing the session this client already holds")
+                return self.session_id
+
             if session_file and not force and self.load_session(session_file):
                 logger.info("Reusing today's session from %s", session_file)
                 return self.session_id  # type: ignore[return-value]
 
+            # Logged at INFO so the cause of every OTP the user receives is visible:
+            #   logging.basicConfig(level=logging.INFO)
+            logger.info("Requesting a new session - this sends an OTP to the registered mobile.")
             encoded_mobile = self._get_encoded_mobile(self._mobile_no)
 
             # Step 1: Request TOTP
-            resp1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False, retry=True)
+            resp1 = self.request("POST", "api/OpenAPIV1/LoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False)
             if not is_success(resp1):
                 raise self._login_failure("LoginTOTP", resp1)
 
             # Step 2: Get OTP generated
-            resp2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False, retry=True)
+            resp2 = self.request("POST", "api/OpenAPIV1/GetClientLoginTOTP", {"MobileNo": encoded_mobile}, require_auth=False)
             if not is_success(resp2):
                 raise self._login_failure("GetClientLoginTOTP", resp2)
 
@@ -431,6 +476,8 @@ class ChoiceClient:
                 )
 
             self.session_id = session_id
+            self._session_created_at = time.monotonic()
+            self._login_date = datetime.date.today()
             # If AccessToken isn't present, fall back to the Bearer API_KEY since
             # some versions of the API allow the same JWT to be reused for the WS.
             # This must cover the plain-string response too, or the price feed
@@ -509,6 +556,10 @@ class ChoiceClient:
             return False
 
         self.session_id = data["session_id"]
+        self._login_date = datetime.date.today()
+        # A session restored from disk is already hours old as far as the cooldown
+        # is concerned: if it is dead, re-logging in is the right move.
+        self._session_created_at = time.monotonic() - self.relogin_cooldown
         self.access_token = data.get("access_token") or self.api_key
         self.bcast_ip = data.get("bcast_ip")
         self.bcast_port = data.get("bcast_port")
@@ -534,6 +585,7 @@ class ChoiceClient:
             response = self.request("GET", "api/OpenAPI/LogOff", _retry_auth=False)
         finally:
             self.session_id = None
+            self._login_date = None
             # A logged-off session must never be reloaded from disk.
             if self._session_file and os.path.exists(self._session_file):
                 try:

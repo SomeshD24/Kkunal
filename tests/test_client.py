@@ -311,6 +311,7 @@ class TestLogin(unittest.TestCase):
         session = {"Status": "Success", "Response": "FRESH-SESSION-1"}
         with mock.patch.object(client._http, "request", side_effect=LOGIN_OK + [fake_response(200, session)]):
             client.login("9999999999")
+        client._session_created_at -= 10_000      # a session that really has aged out
 
         session2 = {"Status": "Success", "Response": "FRESH-SESSION-2"}
         outcomes = ([fake_response(401, {})]                                  # session died
@@ -327,6 +328,7 @@ class TestLogin(unittest.TestCase):
         session = {"Status": "Success", "Response": "FRESH-SESSION-3"}
         with mock.patch.object(client._http, "request", side_effect=LOGIN_OK + [fake_response(200, session)]):
             client.login("9999999999")
+        client._session_created_at -= 10_000
         outcomes = [fake_response(401, {})] + LOGIN_OK + [fake_response(200, session), fake_response(401, {})]
         with mock.patch.object(client._http, "request", side_effect=outcomes):
             with self.assertRaises(AuthenticationError):
@@ -339,6 +341,105 @@ class TestLogin(unittest.TestCase):
             with self.assertRaises(AuthenticationError):
                 client.portfolio.get_holdings()
         self.assertEqual(m.call_count, 1)
+
+
+class TestOTPSpend(unittest.TestCase):
+    """
+    Each login sends a one-time password to the user's phone, so the number of
+    LoginTOTP calls is a user-visible cost, not an implementation detail.
+    """
+
+    def setUp(self):
+        self.client = make_client(max_retries=2)
+        self.otps = 0
+
+    def _responder(self, api_status=200, api_body=None, api_text=None, login_failures=0):
+        """Counts OTP-generating calls and serves the login flow."""
+        bodies = {
+            "LoginTOTP": {"Status": "Success"},
+            "GetClientLoginTOTP": {"Status": "Success", "Response": "123456"},
+            "ValidateTOTP": {"Status": "Success", "Response": "SESSION-1"},
+        }
+        remaining = {"n": login_failures}
+
+        def respond(method, url, **kwargs):
+            endpoint = url.rsplit("/", 1)[-1]
+            if endpoint == "LoginTOTP":
+                self.otps += 1
+                if remaining["n"]:
+                    remaining["n"] -= 1
+                    return fake_response(503, {})
+            if endpoint in bodies:
+                return fake_response(200, bodies[endpoint])
+            return fake_response(api_status, api_body, api_text)
+
+        return respond
+
+    def test_a_transient_failure_during_login_sends_one_otp(self):
+        """LoginTOTP generates the OTP, so retrying it puts extra messages on the phone."""
+        with mock.patch.object(self.client._http, "request",
+                               side_effect=self._responder(login_failures=2)), \
+             mock.patch("choice_api.client.time.sleep"):
+            with self.assertRaises(APIResponseError):
+                self.client.login("9999999999")
+        self.assertEqual(self.otps, 1, "login endpoints must never be retried")
+
+    def test_a_dead_session_does_not_cost_an_otp_per_request(self):
+        with mock.patch.object(self.client._http, "request",
+                               side_effect=self._responder(api_status=401)):
+            self.client.login("9999999999")
+            self.assertEqual(self.otps, 1)
+            for _ in range(20):
+                with self.assertRaises(AuthenticationError):
+                    self.client.portfolio.get_holdings()
+        self.assertEqual(self.otps, 1, "a session rejected moments after issue is not an expired one")
+
+    def test_a_business_error_naming_sessionid_is_not_an_auth_failure(self):
+        body = '{"Status":"Fail","Reason":"Invalid request: SessionId must be supplied with Token"}'
+        with mock.patch.object(self.client._http, "request",
+                               side_effect=self._responder(api_status=400, api_text=body)):
+            self.client.login("9999999999")
+            with self.assertRaises(APIResponseError) as ctx:
+                self.client.portfolio.get_holdings()
+        self.assertNotIsInstance(ctx.exception, AuthenticationError)
+        self.assertEqual(self.otps, 1)
+
+    def test_login_reuses_a_session_this_client_already_holds(self):
+        with mock.patch.object(self.client._http, "request", side_effect=self._responder()):
+            first = self.client.login("9999999999")
+            second = self.client.login("9999999999")
+        self.assertEqual(first, second)
+        self.assertEqual(self.otps, 1)
+
+    def test_force_still_issues_a_new_session(self):
+        with mock.patch.object(self.client._http, "request", side_effect=self._responder()):
+            self.client.login("9999999999")
+            self.client.login("9999999999", force=True)
+        self.assertEqual(self.otps, 2)
+
+    def test_logoff_then_login_starts_a_new_session(self):
+        with mock.patch.object(self.client._http, "request", side_effect=self._responder()):
+            self.client.login("9999999999")
+            self.client.logoff()
+            self.client.login("9999999999")
+        self.assertEqual(self.otps, 2)
+
+    def test_a_genuinely_aged_session_is_still_refreshed(self):
+        with mock.patch.object(self.client._http, "request",
+                               side_effect=self._responder(api_status=401)):
+            self.client.login("9999999999")
+            self.client._session_created_at -= 10_000
+            with self.assertRaises(AuthenticationError):
+                self.client.portfolio.get_holdings()
+        self.assertEqual(self.otps, 2, "an expired session must still trigger exactly one re-login")
+
+    def test_invalid_session_wording_is_still_an_auth_error(self):
+        body = '{"Status":"Fail","Reason":"Invalid SessionId"}'
+        client = make_client(max_retries=0, auto_relogin=False)
+        with mock.patch.object(client._http, "request",
+                               return_value=fake_response(400, None, text=body)):
+            with self.assertRaises(AuthenticationError):
+                client.portfolio.get_holdings()
 
 
 class TestSessionPersistence(unittest.TestCase):

@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-09-22
+
+### Fixed
+
+Repeated login OTPs. Every completed login sends a one-time password to the registered
+mobile, and three paths added in 1.5.0 could each trigger extra ones:
+
+- **Login requests were retried.** `LoginTOTP` is what generates the OTP, and it was
+  marked retry-safe, so a single transient 5xx or timeout during login sent up to three
+  messages. No endpoint under `api/OpenAPIV1/` is retried any more: a retry cannot tell
+  "the server never saw it" from "the server sent an OTP and the reply was lost".
+- **Automatic re-login fired on every rejected request.** A script making twenty calls
+  against a session the server kept refusing performed twenty logins, one per call. A
+  session refused within `relogin_cooldown` (120 s, configurable) of being issued is not
+  an expired session, so the library now says so and raises instead of logging in again.
+- **Ordinary errors were misread as expired sessions.** The body-text heuristic matched
+  a bare `"session id"`, so a validation error such as *"SessionId must be supplied with
+  Token"* was treated as an expired session and triggered a login. The markers now
+  require wording that states the session is invalid.
+
+Also: `login()` reuses a session this client already holds instead of starting a new one
+(pass `force=True` for the old behaviour), and each login is announced at INFO level, so
+`logging.basicConfig(level=logging.INFO)` shows exactly what caused every OTP.
+
 ## [1.5.0] - 2026-09-21
 
 A reliability and correctness release. Indicator values now match TA-Lib and TradingView
